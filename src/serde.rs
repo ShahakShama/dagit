@@ -63,38 +63,76 @@ mod tests {
     use super::*;
     use crate::dag::{Branch, BranchId};
     use std::fs;
+    use std::env;
+    use std::path::Path;
+    
+    /// Helper function to create isolated test functions that work in a temp directory
+    fn with_temp_dir<F>(test_fn: F) 
+    where 
+        F: FnOnce() -> ()
+    {
+        let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
+        let original_dir = env::current_dir().expect("Failed to get current dir");
+        
+        // Change to temp directory for the test
+        env::set_current_dir(temp_dir.path()).expect("Failed to change to temp dir");
+        
+        // Run the test function
+        test_fn();
+        
+        // Always restore original directory
+        env::set_current_dir(&original_dir).expect("Failed to restore directory");
+    }
     
     #[test]
     fn test_write_and_read_dag() {
-        // Create a test DAG
-        let mut dag = Dag::new();
-        let branch1 = Branch::new(BranchId(1), "main".to_string());
-        let branch2 = Branch::new(BranchId(2), "feature".to_string());
-        
-        dag.insert_branch(branch1);
-        dag.insert_branch(branch2);
-        
-        // Write to file
-        write_dag_to_file(&dag).expect("Failed to write DAG");
-        
-        // Read from file
-        let read_dag = read_dag_from_file().expect("Failed to read DAG");
-        
-        // Verify the DAGs are equal
-        assert_eq!(dag, read_dag);
-        
-        // Clean up
-        let _ = fs::remove_file(DAG_FILE_PATH);
-        let _ = fs::remove_dir(".dagit");
+        with_temp_dir(|| {
+            // Create a test DAG
+            let mut dag = Dag::new();
+            let branch1 = Branch::new(BranchId(1), "main".to_string());
+            let branch2 = Branch::new(BranchId(2), "feature".to_string());
+            
+            dag.insert_branch(branch1);
+            dag.insert_branch(branch2);
+            
+            // Write to file
+            write_dag_to_file(&dag).expect("Failed to write DAG");
+            
+            // Verify file was created
+            assert!(Path::new(DAG_FILE_PATH).exists(), "DAG file should exist after write");
+            
+            // Read from file
+            let read_dag = read_dag_from_file().expect("Failed to read DAG");
+            
+            // Verify the DAGs are equal
+            assert_eq!(dag, read_dag);
+            
+            // Clean up is automatic when temp dir is dropped
+        });
     }
     
     #[test]
     fn test_read_nonexistent_file() {
-        // Ensure file doesn't exist
-        let _ = fs::remove_file(DAG_FILE_PATH);
-        
-        // Should return empty DAG
-        let dag = read_dag_from_file().expect("Should return empty DAG");
-        assert!(dag.is_empty());
+        with_temp_dir(|| {
+            // In a fresh temp directory, the file shouldn't exist
+            assert!(!Path::new(DAG_FILE_PATH).exists(), "DAG file should not exist initially");
+            
+            // Should return empty DAG
+            let dag = read_dag_from_file().expect("Should return empty DAG");
+            assert!(dag.is_empty());
+        });
+    }
+    
+    #[test]
+    fn test_read_empty_file() {
+        with_temp_dir(|| {
+            // Create empty .dagit directory and file
+            fs::create_dir_all(".dagit").expect("Failed to create .dagit directory");
+            fs::write(DAG_FILE_PATH, "").expect("Failed to create empty file");
+            
+            // Should return empty DAG
+            let dag = read_dag_from_file().expect("Should return empty DAG for empty file");
+            assert!(dag.is_empty());
+        });
     }
 }
