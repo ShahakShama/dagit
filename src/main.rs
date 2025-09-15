@@ -2,6 +2,9 @@ mod dag;
 mod serde;
 mod git;
 
+#[cfg(test)]
+mod flow_tests;
+
 use clap::{Parser, Subcommand};
 use git::get_current_git_branch;
 use serde::{read_dag_from_file, write_dag_to_file};

@@ -166,6 +166,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_get_current_git_branch_not_in_repo() {
         let temp_dir = tempfile::tempdir().expect("Failed to create temp dir");
         let original_dir = env::current_dir().expect("Failed to get current dir");
@@ -185,6 +186,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_is_git_repository() {
         let temp_dir = setup_test_git_repo();
         let non_git_dir = tempfile::tempdir().expect("Failed to create temp dir");

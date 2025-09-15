@@ -85,6 +85,7 @@ mod tests {
     }
     
     #[test]
+    #[serial_test::serial]
     fn test_write_and_read_dag() {
         with_temp_dir(|| {
             // Create a test DAG
@@ -109,6 +110,7 @@ mod tests {
     }
     
     #[test]
+    #[serial_test::serial]
     fn test_read_nonexistent_file() {
         with_temp_dir(|| {
             // In a fresh temp directory, the file shouldn't exist
@@ -121,6 +123,7 @@ mod tests {
     }
     
     #[test]
+    #[serial_test::serial]
     fn test_read_empty_file() {
         with_temp_dir(|| {
             // Create empty .dagit directory and file
