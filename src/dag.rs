@@ -17,8 +17,8 @@ pub struct Branch {
 }
 
 impl Branch {
-    /// Create a new Branch
-    pub fn new(uid: BranchId, git_name: String) -> Self {
+    /// Create a new Branch with a specific ID (used internally by DAG)
+    pub(crate) fn with_id(uid: BranchId, git_name: String) -> Self {
         Branch {
             uid,
             parents: Vec::new(),
@@ -32,6 +32,8 @@ impl Branch {
 pub struct Dag {
     /// Map from branch UID to Branch
     pub branches: HashMap<BranchId, Branch>,
+    /// Next available branch ID (used for generating unique IDs)
+    next_branch_id: usize,
 }
 
 impl Dag {
@@ -39,11 +41,25 @@ impl Dag {
     pub fn new() -> Self {
         Dag {
             branches: HashMap::new(),
+            next_branch_id: 1,
         }
     }
     
-    /// Insert a branch into the DAG
+    /// Create a new branch with an automatically generated unique ID
+    pub fn create_branch(&mut self, git_name: String) -> BranchId {
+        let branch_id = BranchId(self.next_branch_id);
+        self.next_branch_id += 1;
+        
+        let branch = Branch::with_id(branch_id, git_name);
+        self.branches.insert(branch_id, branch);
+        
+        branch_id
+    }
+    
+    /// Insert a branch into the DAG (for when you already have a branch with an ID)
     pub fn insert_branch(&mut self, branch: Branch) {
+        // Update next_branch_id to ensure we don't generate duplicate IDs
+        self.next_branch_id = self.next_branch_id.max(branch.uid.0 + 1);
         self.branches.insert(branch.uid, branch);
     }
     
@@ -77,3 +93,70 @@ impl Dag {
         self.branches.is_empty()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_unique_id_generation() {
+        let mut dag = Dag::new();
+        
+        // Create multiple branches and verify they get unique IDs
+        let id1 = dag.create_branch("main".to_string());
+        let id2 = dag.create_branch("feature".to_string());
+        let id3 = dag.create_branch("bugfix".to_string());
+        
+        // All IDs should be different
+        assert_ne!(id1, id2);
+        assert_ne!(id2, id3);
+        assert_ne!(id1, id3);
+        
+        // IDs should be sequential starting from 1
+        assert_eq!(id1.0, 1);
+        assert_eq!(id2.0, 2);
+        assert_eq!(id3.0, 3);
+        
+        // Verify branches are stored with correct IDs and names
+        assert_eq!(dag.get_branch(&id1).unwrap().git_name, "main");
+        assert_eq!(dag.get_branch(&id2).unwrap().git_name, "feature");
+        assert_eq!(dag.get_branch(&id3).unwrap().git_name, "bugfix");
+    }
+    
+    #[test]
+    fn test_insert_branch_updates_counter() {
+        let mut dag = Dag::new();
+        
+        // Insert a branch with a high ID
+        let high_id_branch = Branch::with_id(BranchId(100), "external".to_string());
+        dag.insert_branch(high_id_branch);
+        
+        // Next created branch should have ID 101, not 1
+        let new_id = dag.create_branch("new_branch".to_string());
+        assert_eq!(new_id.0, 101);
+    }
+    
+    #[test]
+    fn test_counter_persistence_through_serialization() {
+        let mut original_dag = Dag::new();
+        
+        // Create some branches
+        original_dag.create_branch("main".to_string());
+        original_dag.create_branch("feature".to_string());
+        
+        // Serialize and deserialize
+        let serialized = serde_json::to_string(&original_dag).expect("Failed to serialize");
+        let mut restored_dag: Dag = serde_json::from_str(&serialized).expect("Failed to deserialize");
+        
+        // Create a new branch - should get ID 3, not 1
+        let new_id = restored_dag.create_branch("new_after_restore".to_string());
+        assert_eq!(new_id.0, 3);
+        
+        // Verify all branches exist
+        assert_eq!(restored_dag.len(), 3);
+        assert!(restored_dag.get_branch(&BranchId(1)).is_some());
+        assert!(restored_dag.get_branch(&BranchId(2)).is_some());
+        assert!(restored_dag.get_branch(&BranchId(3)).is_some());
+    }
+}
+

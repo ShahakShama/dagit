@@ -61,7 +61,7 @@ pub fn write_dag_to_file(dag: &Dag) -> Result<(), SerdeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dag::{Branch, BranchId};
+    use crate::dag::Dag;
     use std::fs;
     use std::env;
     use std::path::Path;
@@ -89,11 +89,8 @@ mod tests {
         with_temp_dir(|| {
             // Create a test DAG
             let mut dag = Dag::new();
-            let branch1 = Branch::new(BranchId(1), "main".to_string());
-            let branch2 = Branch::new(BranchId(2), "feature".to_string());
-            
-            dag.insert_branch(branch1);
-            dag.insert_branch(branch2);
+            dag.create_branch("main".to_string());
+            dag.create_branch("feature".to_string());
             
             // Write to file
             write_dag_to_file(&dag).expect("Failed to write DAG");
