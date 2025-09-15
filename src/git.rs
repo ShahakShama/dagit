@@ -1,4 +1,5 @@
 use std::process::Command;
+use crate::dag::Branch;
 
 /// Get the current git branch name
 /// 
@@ -193,9 +194,70 @@ pub fn find_closest_children(target_branch: &str, candidate_branches: &[String])
     Ok(closest_children)
 }
 
+/// Rebase a branch onto another branch
+/// 
+/// This function will:
+/// 1. Check out the branch to be rebased
+/// 2. Attempt to rebase it onto the target branch
+/// 3. If conflicts occur, abort the rebase and return an error
+/// 4. Update the Branch's last_failed_rebase field on failure
+/// 
+/// Returns Ok(()) on success, Err(message) on failure
+pub fn rebase_branch(branch: &mut Branch, target_branch: &str) -> Result<(), String> {
+    let branch_name = &branch.git_name;
+    
+    // First, check out the branch we want to rebase
+    let checkout_output = Command::new("git")
+        .args(["checkout", branch_name])
+        .output()
+        .map_err(|e| format!("Failed to execute git checkout: {}", e))?;
+    
+    if !checkout_output.status.success() {
+        let stderr = String::from_utf8_lossy(&checkout_output.stderr);
+        return Err(format!("Failed to checkout branch '{}': {}", branch_name, stderr));
+    }
+    
+    // Attempt to rebase onto the target branch
+    let rebase_output = Command::new("git")
+        .args(["rebase", target_branch])
+        .output()
+        .map_err(|e| format!("Failed to execute git rebase: {}", e))?;
+    
+    if !rebase_output.status.success() {
+        // Rebase failed, likely due to conflicts
+        let stderr = String::from_utf8_lossy(&rebase_output.stderr);
+        
+        // Abort the rebase to clean up
+        let abort_output = Command::new("git")
+            .args(["rebase", "--abort"])
+            .output()
+            .map_err(|e| format!("Failed to execute git rebase --abort: {}", e))?;
+        
+        if !abort_output.status.success() {
+            let abort_stderr = String::from_utf8_lossy(&abort_output.stderr);
+            return Err(format!(
+                "Rebase failed and abort also failed. Rebase error: {}. Abort error: {}", 
+                stderr, abort_stderr
+            ));
+        }
+        
+        // Update the branch's last failed rebase field
+        branch.last_failed_rebase = Some(target_branch.to_string());
+        
+        return Err(format!("Rebase of '{}' onto '{}' failed with conflicts: {}", 
+                          branch_name, target_branch, stderr));
+    }
+    
+    // Rebase succeeded - clear any previous failed rebase
+    branch.last_failed_rebase = None;
+    
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::dag::BranchId;
     use std::process::Command;
     use std::fs;
     use std::env;
@@ -518,5 +580,138 @@ mod tests {
 
         // Restore original directory
         std::env::set_current_dir(&original_dir).expect("Failed to restore directory");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_rebase_branch_success() {
+        let temp_dir = setup_test_git_repo();
+        let temp_path = temp_dir.path();
+        let original_dir = env::current_dir().expect("Failed to get current dir");
+
+        // Change to temp directory for this test
+        env::set_current_dir(temp_path).expect("Failed to change to temp dir");
+
+        // Create a feature branch from master
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .output()
+            .expect("Failed to create feature branch");
+
+        // Add a commit to feature branch
+        std::fs::write(temp_path.join("feature.txt"), "feature content")
+            .expect("Failed to create feature.txt");
+        Command::new("git")
+            .args(["add", "feature.txt"])
+            .output()
+            .expect("Failed to add feature.txt");
+        Command::new("git")
+            .args(["commit", "-m", "Add feature"])
+            .output()
+            .expect("Failed to commit feature");
+
+        // Go back to master and add another commit
+        Command::new("git")
+            .args(["checkout", "master"])
+            .output()
+            .expect("Failed to checkout master");
+        std::fs::write(temp_path.join("master.txt"), "master content")
+            .expect("Failed to create master.txt");
+        Command::new("git")
+            .args(["add", "master.txt"])
+            .output()
+            .expect("Failed to add master.txt");
+        Command::new("git")
+            .args(["commit", "-m", "Add master change"])
+            .output()
+            .expect("Failed to commit master change");
+
+        // Test rebase
+        let mut branch = Branch::with_id(BranchId(1), "feature".to_string());
+        let result = rebase_branch(&mut branch, "master");
+
+        // Restore original directory
+        env::set_current_dir(&original_dir).expect("Failed to restore directory");
+
+        assert!(result.is_ok(), "Rebase should succeed: {:?}", result);
+        assert!(branch.last_failed_rebase.is_none(), "last_failed_rebase should be None on success");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_rebase_branch_with_conflicts() {
+        let temp_dir = setup_test_git_repo();
+        let temp_path = temp_dir.path();
+        let original_dir = env::current_dir().expect("Failed to get current dir");
+
+        // Change to temp directory for this test
+        env::set_current_dir(temp_path).expect("Failed to change to temp dir");
+
+        // Create a feature branch from master
+        Command::new("git")
+            .args(["checkout", "-b", "feature"])
+            .output()
+            .expect("Failed to create feature branch");
+
+        // Modify the same file in both branches to create conflicts
+        std::fs::write(temp_path.join("test.txt"), "feature change")
+            .expect("Failed to modify test.txt in feature");
+        Command::new("git")
+            .args(["add", "test.txt"])
+            .output()
+            .expect("Failed to add test.txt in feature");
+        Command::new("git")
+            .args(["commit", "-m", "Change test.txt in feature"])
+            .output()
+            .expect("Failed to commit in feature");
+
+        // Go back to master and modify the same file differently
+        Command::new("git")
+            .args(["checkout", "master"])
+            .output()
+            .expect("Failed to checkout master");
+        std::fs::write(temp_path.join("test.txt"), "master change")
+            .expect("Failed to modify test.txt in master");
+        Command::new("git")
+            .args(["add", "test.txt"])
+            .output()
+            .expect("Failed to add test.txt in master");
+        Command::new("git")
+            .args(["commit", "-m", "Change test.txt in master"])
+            .output()
+            .expect("Failed to commit in master");
+
+        // Test rebase (should fail due to conflicts)
+        let mut branch = Branch::with_id(BranchId(1), "feature".to_string());
+        let result = rebase_branch(&mut branch, "master");
+
+        // Restore original directory
+        env::set_current_dir(&original_dir).expect("Failed to restore directory");
+
+        assert!(result.is_err(), "Rebase should fail due to conflicts");
+        assert_eq!(branch.last_failed_rebase, Some("master".to_string()), 
+                  "last_failed_rebase should be set to target branch on failure");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_rebase_branch_nonexistent_branch() {
+        let temp_dir = setup_test_git_repo();
+        let temp_path = temp_dir.path();
+        let original_dir = env::current_dir().expect("Failed to get current dir");
+
+        // Change to temp directory for this test
+        env::set_current_dir(temp_path).expect("Failed to change to temp dir");
+
+        // Test rebasing a non-existent branch
+        let mut branch = Branch::with_id(BranchId(1), "nonexistent".to_string());
+        let result = rebase_branch(&mut branch, "master");
+
+        // Restore original directory
+        env::set_current_dir(&original_dir).expect("Failed to restore directory");
+
+        assert!(result.is_err(), "Rebase should fail for non-existent branch");
+        // The last_failed_rebase should not be set because the failure was due to checkout, not rebase conflicts
+        assert!(branch.last_failed_rebase.is_none(), "last_failed_rebase should be None when checkout fails");
     }
 }

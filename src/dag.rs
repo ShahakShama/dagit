@@ -14,6 +14,8 @@ pub struct Branch {
     pub children: Vec<BranchId>,
     /// Git branch name
     pub git_name: String,
+    /// Last failed rebase attempt (target branch name)
+    pub last_failed_rebase: Option<String>,
 }
 
 impl Branch {
@@ -24,6 +26,7 @@ impl Branch {
             parents: Vec::new(),
             children: Vec::new(),
             git_name,
+            last_failed_rebase: None,
         }
     }
 }
