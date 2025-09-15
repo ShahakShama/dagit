@@ -92,6 +92,44 @@ impl Dag {
     pub fn is_empty(&self) -> bool {
         self.branches.is_empty()
     }
+    
+    /// Find a branch by its git name
+    pub fn find_branch_by_name(&self, git_name: &str) -> Option<&Branch> {
+        self.branches.values().find(|branch| branch.git_name == git_name)
+    }
+    
+    /// Get all git branch names that are currently tracked
+    pub fn get_tracked_branch_names(&self) -> Vec<String> {
+        self.branches.values().map(|branch| branch.git_name.clone()).collect()
+    }
+    
+    /// Add a parent relationship (this also adds the corresponding child relationship)
+    pub fn add_parent_child_relationship(&mut self, child_name: &str, parent_name: &str) -> Result<(), String> {
+        // Find the child and parent branches
+        let child_id = self.find_branch_by_name(child_name)
+            .map(|branch| branch.uid)
+            .ok_or_else(|| format!("Child branch '{}' not found in DAG", child_name))?;
+            
+        let parent_id = self.find_branch_by_name(parent_name)
+            .map(|branch| branch.uid)
+            .ok_or_else(|| format!("Parent branch '{}' not found in DAG", parent_name))?;
+        
+        // Add parent to child's parents list (if not already present)
+        if let Some(child_branch) = self.branches.get_mut(&child_id) {
+            if !child_branch.parents.contains(&parent_id) {
+                child_branch.parents.push(parent_id);
+            }
+        }
+        
+        // Add child to parent's children list (if not already present)
+        if let Some(parent_branch) = self.branches.get_mut(&parent_id) {
+            if !parent_branch.children.contains(&child_id) {
+                parent_branch.children.push(child_id);
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]

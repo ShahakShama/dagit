@@ -6,7 +6,7 @@ mod git;
 mod flow_tests;
 
 use clap::{Parser, Subcommand};
-use git::get_current_git_branch;
+use git::{get_current_git_branch, find_closest_parent, find_closest_children};
 use serde::{read_dag_from_file, write_dag_to_file};
 
 #[derive(Parser)]
@@ -71,8 +71,40 @@ fn handle_track_command(branch_name: Option<String>) {
     }
     
     // Create new branch with unique ID
-    let branch_id = dag.create_branch(branch_to_track.clone());
+    let _branch_id = dag.create_branch(branch_to_track.clone());
     println!("Tracking branch {}", branch_to_track);
+    
+    // Auto-detect parent and child relationships
+    let tracked_branches = dag.get_tracked_branch_names();
+    
+    // Find the closest parent
+    match find_closest_parent(&branch_to_track, &tracked_branches) {
+        Ok(Some(parent_name)) => {
+            match dag.add_parent_child_relationship(&branch_to_track, &parent_name) {
+                Ok(()) => println!("  → Detected parent: {}", parent_name),
+                Err(e) => eprintln!("Warning: Failed to add parent relationship: {}", e),
+            }
+        }
+        Ok(None) => println!("  → No parent detected"),
+        Err(e) => eprintln!("Warning: Failed to detect parent: {}", e),
+    }
+    
+    // Find the closest children
+    match find_closest_children(&branch_to_track, &tracked_branches) {
+        Ok(children) => {
+            if children.is_empty() {
+                println!("  → No children detected");
+            } else {
+                for child_name in &children {
+                    match dag.add_parent_child_relationship(child_name, &branch_to_track) {
+                        Ok(()) => println!("  → Detected child: {}", child_name),
+                        Err(e) => eprintln!("Warning: Failed to add child relationship: {}", e),
+                    }
+                }
+            }
+        }
+        Err(e) => eprintln!("Warning: Failed to detect children: {}", e),
+    }
     
     // Save updated DAG back to file
     match write_dag_to_file(&dag) {

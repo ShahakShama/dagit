@@ -59,6 +59,140 @@ pub fn get_all_branches() -> Result<Vec<String>, String> {
     Ok(branches)
 }
 
+/// Get the merge base (common ancestor) between two branches
+pub fn get_merge_base(branch1: &str, branch2: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["merge-base", branch1, branch2])
+        .output()
+        .map_err(|e| format!("Failed to execute git merge-base: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("Failed to find merge base between {} and {}", branch1, branch2));
+    }
+
+    let merge_base = String::from_utf8(output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?
+        .trim()
+        .to_string();
+
+    Ok(merge_base)
+}
+
+/// Get the commit hash of a branch
+pub fn get_branch_commit(branch: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", branch])
+        .output()
+        .map_err(|e| format!("Failed to execute git rev-parse: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("Failed to get commit for branch {}", branch));
+    }
+
+    let commit = String::from_utf8(output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?
+        .trim()
+        .to_string();
+
+    Ok(commit)
+}
+
+/// Count commits between two references (from..to)
+pub fn count_commits_between(from: &str, to: &str) -> Result<u32, String> {
+    let output = Command::new("git")
+        .args(["rev-list", "--count", &format!("{}..{}", from, to)])
+        .output()
+        .map_err(|e| format!("Failed to execute git rev-list: {}", e))?;
+
+    if !output.status.success() {
+        return Err(format!("Failed to count commits between {} and {}", from, to));
+    }
+
+    let output_string = String::from_utf8(output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?;
+    let count_str = output_string.trim();
+
+    count_str.parse::<u32>()
+        .map_err(|e| format!("Failed to parse commit count: {}", e))
+}
+
+/// Check if branch1 is an ancestor of branch2
+pub fn is_ancestor(ancestor: &str, descendant: &str) -> Result<bool, String> {
+    let output = Command::new("git")
+        .args(["merge-base", "--is-ancestor", ancestor, descendant])
+        .output()
+        .map_err(|e| format!("Failed to execute git merge-base --is-ancestor: {}", e))?;
+
+    Ok(output.status.success())
+}
+
+/// Find the closest parent branch from a list of candidate branches
+/// Returns the branch that is:
+/// 1. An ancestor of the target branch
+/// 2. Has the shortest distance (fewest commits) to the target branch
+pub fn find_closest_parent(target_branch: &str, candidate_branches: &[String]) -> Result<Option<String>, String> {
+    let mut closest_parent = None;
+    let mut min_distance = u32::MAX;
+
+    for candidate in candidate_branches {
+        // Skip self
+        if candidate == target_branch {
+            continue;
+        }
+
+        // Check if candidate is an ancestor of target
+        if is_ancestor(candidate, target_branch)? {
+            let distance = count_commits_between(candidate, target_branch)?;
+            if distance > 0 && distance < min_distance {
+                min_distance = distance;
+                closest_parent = Some(candidate.clone());
+            }
+        }
+    }
+
+    Ok(closest_parent)
+}
+
+/// Find the closest child branches from a list of candidate branches
+/// Returns branches that are:
+/// 1. Descendants of the target branch  
+/// 2. Have the shortest distance (fewest commits) from the target branch
+pub fn find_closest_children(target_branch: &str, candidate_branches: &[String]) -> Result<Vec<String>, String> {
+    let mut children_with_distance = Vec::new();
+
+    for candidate in candidate_branches {
+        // Skip self
+        if candidate == target_branch {
+            continue;
+        }
+
+        // Check if target is an ancestor of candidate (candidate is descendant of target)
+        if is_ancestor(target_branch, candidate)? {
+            let distance = count_commits_between(target_branch, candidate)?;
+            if distance > 0 {
+                children_with_distance.push((candidate.clone(), distance));
+            }
+        }
+    }
+
+    // Sort by distance and return only the closest ones
+    if children_with_distance.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    children_with_distance.sort_by_key(|(_, distance)| *distance);
+    let min_distance = children_with_distance[0].1;
+    
+    // Return all children with the minimum distance
+    let closest_children = children_with_distance
+        .into_iter()
+        .filter(|(_, distance)| *distance == min_distance)
+        .map(|(branch, _)| branch)
+        .collect();
+
+    Ok(closest_children)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +388,135 @@ mod tests {
         let has_main_or_master = branches.contains(&"main".to_string()) || 
                                 branches.contains(&"master".to_string());
         assert!(has_main_or_master, "Should contain main or master branch, got: {:?}", branches);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_relationship_detection() {
+        let temp_dir = setup_test_git_repo();
+        let temp_path = temp_dir.path();
+
+        // Create a more complex branch structure
+        // master -> feature-1 -> feature-2
+        //        -> feature-3
+
+        // Create feature-1 from master
+        Command::new("git")
+            .args(["checkout", "-b", "feature-1"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to create feature-1 branch");
+
+        // Add a commit to feature-1
+        std::fs::write(temp_path.join("feature1.txt"), "feature 1 content")
+            .expect("Failed to create feature1.txt");
+        Command::new("git")
+            .args(["add", "feature1.txt"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to add feature1.txt");
+        Command::new("git")
+            .args(["commit", "-m", "Add feature 1"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to commit feature 1");
+
+        // Create feature-2 from feature-1
+        Command::new("git")
+            .args(["checkout", "-b", "feature-2"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to create feature-2 branch");
+
+        // Add a commit to feature-2
+        std::fs::write(temp_path.join("feature2.txt"), "feature 2 content")
+            .expect("Failed to create feature2.txt");
+        Command::new("git")
+            .args(["add", "feature2.txt"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to add feature2.txt");
+        Command::new("git")
+            .args(["commit", "-m", "Add feature 2"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to commit feature 2");
+
+        // Go back to master and create feature-3
+        Command::new("git")
+            .args(["checkout", "master"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to checkout master");
+        Command::new("git")
+            .args(["checkout", "-b", "feature-3"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to create feature-3 branch");
+
+        // Add a commit to feature-3
+        std::fs::write(temp_path.join("feature3.txt"), "feature 3 content")
+            .expect("Failed to create feature3.txt");
+        Command::new("git")
+            .args(["add", "feature3.txt"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to add feature3.txt");
+        Command::new("git")
+            .args(["commit", "-m", "Add feature 3"])
+            .current_dir(temp_path)
+            .output()
+            .expect("Failed to commit feature 3");
+
+        // Save current directory and change to temp directory
+        let original_dir = std::env::current_dir().expect("Failed to get current dir");
+        std::env::set_current_dir(temp_path).expect("Failed to change to temp dir");
+
+        // Test ancestor relationships
+        let result = is_ancestor("master", "feature-1");
+        assert!(result.is_ok() && result.unwrap(), "master should be ancestor of feature-1");
+
+        let result = is_ancestor("feature-1", "feature-2");
+        assert!(result.is_ok() && result.unwrap(), "feature-1 should be ancestor of feature-2");
+
+        let result = is_ancestor("master", "feature-2");
+        assert!(result.is_ok() && result.unwrap(), "master should be ancestor of feature-2");
+
+        let result = is_ancestor("master", "feature-3");
+        assert!(result.is_ok() && result.unwrap(), "master should be ancestor of feature-3");
+
+        let result = is_ancestor("feature-1", "feature-3");
+        assert!(result.is_ok() && !result.unwrap(), "feature-1 should NOT be ancestor of feature-3");
+
+        // Test closest parent detection
+        let branches = vec!["master".to_string(), "feature-1".to_string(), "feature-3".to_string()];
+        
+        let result = find_closest_parent("feature-2", &branches);
+        assert!(result.is_ok());
+        let parent = result.unwrap();
+        assert_eq!(parent, Some("feature-1".to_string()), "feature-1 should be closest parent of feature-2");
+
+        let result = find_closest_parent("feature-1", &branches);
+        assert!(result.is_ok());
+        let parent = result.unwrap();
+        assert_eq!(parent, Some("master".to_string()), "master should be closest parent of feature-1");
+
+        // Test closest children detection
+        let branches = vec!["master".to_string(), "feature-1".to_string(), "feature-2".to_string(), "feature-3".to_string()];
+        
+        let result = find_closest_children("master", &branches);
+        assert!(result.is_ok());
+        let children = result.unwrap();
+        assert_eq!(children.len(), 2, "master should have 2 direct children");
+        assert!(children.contains(&"feature-1".to_string()), "master should have feature-1 as child");
+        assert!(children.contains(&"feature-3".to_string()), "master should have feature-3 as child");
+
+        let result = find_closest_children("feature-1", &branches);
+        assert!(result.is_ok());
+        let children = result.unwrap();
+        assert_eq!(children, vec!["feature-2".to_string()], "feature-1 should have feature-2 as only child");
+
+        // Restore original directory
+        std::env::set_current_dir(&original_dir).expect("Failed to restore directory");
     }
 }

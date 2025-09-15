@@ -248,21 +248,103 @@ fn verify_dag_state(expected_dag: Dag) -> Result<(), String> {
         ));
     }
     
-    // Check that all expected branches exist with correct names
+    // Check that all expected branches exist with correct names and dependencies
     for (expected_id, expected_branch) in &expected_dag.branches {
         match actual_dag.branches.get(expected_id) {
             Some(actual_branch) => {
+                // Check branch name
                 if actual_branch.git_name != expected_branch.git_name {
                     return Err(format!(
                         "Branch {} name mismatch: expected '{}', got '{}'",
                         expected_id.0, expected_branch.git_name, actual_branch.git_name
                     ));
                 }
+                
+                // Check parent relationships
+                if actual_branch.parents.len() != expected_branch.parents.len() {
+                    return Err(format!(
+                        "Branch {} ('{}') parent count mismatch: expected {}, got {}",
+                        expected_id.0, expected_branch.git_name, 
+                        expected_branch.parents.len(), actual_branch.parents.len()
+                    ));
+                }
+                
+                for expected_parent in &expected_branch.parents {
+                    if !actual_branch.parents.contains(expected_parent) {
+                        let parent_name = expected_dag.branches.get(expected_parent)
+                            .map(|b| b.git_name.clone())
+                            .unwrap_or_else(|| format!("ID {}", expected_parent.0));
+                        return Err(format!(
+                            "Branch {} ('{}') missing expected parent: {} ('{}')",
+                            expected_id.0, expected_branch.git_name,
+                            expected_parent.0, parent_name
+                        ));
+                    }
+                }
+                
+                // Check child relationships
+                if actual_branch.children.len() != expected_branch.children.len() {
+                    return Err(format!(
+                        "Branch {} ('{}') child count mismatch: expected {}, got {}",
+                        expected_id.0, expected_branch.git_name, 
+                        expected_branch.children.len(), actual_branch.children.len()
+                    ));
+                }
+                
+                for expected_child in &expected_branch.children {
+                    if !actual_branch.children.contains(expected_child) {
+                        let child_name = expected_dag.branches.get(expected_child)
+                            .map(|b| b.git_name.clone())
+                            .unwrap_or_else(|| format!("ID {}", expected_child.0));
+                        return Err(format!(
+                            "Branch {} ('{}') missing expected child: {} ('{}')",
+                            expected_id.0, expected_branch.git_name,
+                            expected_child.0, child_name
+                        ));
+                    }
+                }
             }
             None => {
                 return Err(format!(
                     "Expected branch {} ('{}') not found in actual DAG",
                     expected_id.0, expected_branch.git_name
+                ));
+            }
+        }
+    }
+    
+    // Verify parent-child relationship symmetry in actual DAG
+    for (branch_id, branch) in &actual_dag.branches {
+        // For each parent, verify this branch is in parent's children list
+        for parent_id in &branch.parents {
+            if let Some(parent_branch) = actual_dag.branches.get(parent_id) {
+                if !parent_branch.children.contains(branch_id) {
+                    return Err(format!(
+                        "Asymmetric parent-child relationship: Branch {} ('{}') has parent {} ('{}'), but parent doesn't have it as child",
+                        branch_id.0, branch.git_name, parent_id.0, parent_branch.git_name
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "Branch {} ('{}') references non-existent parent {}",
+                    branch_id.0, branch.git_name, parent_id.0
+                ));
+            }
+        }
+        
+        // For each child, verify this branch is in child's parents list
+        for child_id in &branch.children {
+            if let Some(child_branch) = actual_dag.branches.get(child_id) {
+                if !child_branch.parents.contains(branch_id) {
+                    return Err(format!(
+                        "Asymmetric parent-child relationship: Branch {} ('{}') has child {} ('{}'), but child doesn't have it as parent",
+                        branch_id.0, branch.git_name, child_id.0, child_branch.git_name
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "Branch {} ('{}') references non-existent child {}",
+                    branch_id.0, branch.git_name, child_id.0
                 ));
             }
         }
