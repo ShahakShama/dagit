@@ -24,6 +24,8 @@ enum Commands {
         /// Name of the branch to track (defaults to current branch)
         branch_name: Option<String>,
     },
+    /// Update command placeholder
+    Update,
 }
 
 fn main() {
@@ -32,6 +34,9 @@ fn main() {
     match &cli.command {
         Commands::Track { branch_name } => {
             handle_track_command(branch_name.clone());
+        }
+        Commands::Update => {
+            handle_update_command();
         }
     }
 }
@@ -114,5 +119,10 @@ fn handle_track_command(branch_name: Option<String>) {
             std::process::exit(1);
         }
     }
+}
+
+fn handle_update_command() {
+    // TODO: Implement update command functionality
+    println!("Update command called - implementation pending");
 }
 
