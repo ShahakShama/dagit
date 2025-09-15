@@ -4,6 +4,7 @@ mod git;
 
 use clap::{Parser, Subcommand};
 use git::get_current_git_branch;
+use serde::{read_dag_from_file, write_dag_to_file};
 
 #[derive(Parser)]
 #[command(name = "dagit")]
@@ -47,13 +48,36 @@ fn handle_track_command(branch_name: Option<String>) {
     
     println!("Tracking branch: {}", branch_to_track);
     
-    // TODO: Implement the actual tracking logic:
-    // 1. Load existing DAG from .dagit/dag.json
-    // 2. Create new Branch with unique ID
-    // 3. Add branch to DAG
-    // 4. Save updated DAG back to file
-    // 5. Update git branch tracking if needed
+    // Load existing DAG from file (or create new one if file doesn't exist)
+    let mut dag = match read_dag_from_file() {
+        Ok(dag) => {
+            dag
+        }
+        Err(e) => {
+            eprintln!("Failed to read DAG file: {}", e);
+            std::process::exit(1);
+        }
+    };
     
-    println!("Track command placeholder - implementation coming soon!");
+    // Check if branch already exists
+    for (_, branch) in &dag.branches {
+        if branch.git_name == branch_to_track {
+            println!("Branch '{}' is already being tracked", branch_to_track);
+            return;
+        }
+    }
+    
+    // Create new branch with unique ID
+    let branch_id = dag.create_branch(branch_to_track.clone());
+    println!("Tracking branch {}", branch_to_track);
+    
+    // Save updated DAG back to file
+    match write_dag_to_file(&dag) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("Failed to write DAG file: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
