@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -133,6 +133,64 @@ impl Dag {
         
         Ok(())
     }
+    
+    /// Get branches in topological sort order (parents before children)
+    /// Returns an error if there are cycles in the DAG
+    pub fn topological_sort(&self) -> Result<Vec<BranchId>, String> {
+        let mut in_degree: HashMap<BranchId, usize> = HashMap::new();
+        let mut result = Vec::new();
+        let mut queue = VecDeque::new();
+        
+        // Initialize in-degree count for all branches
+        for (branch_id, branch) in &self.branches {
+            in_degree.insert(*branch_id, branch.parents.len());
+            if branch.parents.is_empty() {
+                queue.push_back(*branch_id);
+            }
+        }
+        
+        // Process branches with no incoming edges
+        while let Some(current_id) = queue.pop_front() {
+            result.push(current_id);
+            
+            // For each child of current branch
+            if let Some(current_branch) = self.branches.get(&current_id) {
+                for &child_id in &current_branch.children {
+                    if let Some(degree) = in_degree.get_mut(&child_id) {
+                        *degree -= 1;
+                        if *degree == 0 {
+                            queue.push_back(child_id);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Check for cycles
+        if result.len() != self.branches.len() {
+            return Err("Cycle detected in DAG - topological sort not possible".to_string());
+        }
+        
+        Ok(result)
+    }
+    
+    /// Get all recursive children of a branch (including the branch itself)
+    pub fn get_recursive_children(&self, branch_id: BranchId) -> HashSet<BranchId> {
+        let mut visited = HashSet::new();
+        let mut stack = vec![branch_id];
+        
+        while let Some(current_id) = stack.pop() {
+            if visited.insert(current_id) {
+                if let Some(branch) = self.branches.get(&current_id) {
+                    for &child_id in &branch.children {
+                        stack.push(child_id);
+                    }
+                }
+            }
+        }
+        
+        visited
+    }
 }
 
 #[cfg(test)]
@@ -198,6 +256,225 @@ mod tests {
         assert!(restored_dag.get_branch(&BranchId(1)).is_some());
         assert!(restored_dag.get_branch(&BranchId(2)).is_some());
         assert!(restored_dag.get_branch(&BranchId(3)).is_some());
+    }
+
+    #[test]
+    fn test_topological_sort_empty_dag() {
+        let dag = Dag::new();
+        let result = dag.topological_sort().unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_topological_sort_single_branch() {
+        let mut dag = Dag::new();
+        let id = dag.create_branch("main".to_string());
+        
+        let result = dag.topological_sort().unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0], id);
+    }
+
+    #[test]
+    fn test_topological_sort_linear_chain() {
+        let mut dag = Dag::new();
+        
+        // Create a linear chain: main -> feature -> bugfix
+        let main_id = dag.create_branch("main".to_string());
+        let feature_id = dag.create_branch("feature".to_string());
+        let bugfix_id = dag.create_branch("bugfix".to_string());
+        
+        // Add relationships
+        dag.add_parent_child_relationship("feature", "main").unwrap();
+        dag.add_parent_child_relationship("bugfix", "feature").unwrap();
+        
+        let result = dag.topological_sort().unwrap();
+        assert_eq!(result.len(), 3);
+        
+        // Parents should come before children
+        let main_pos = result.iter().position(|&id| id == main_id).unwrap();
+        let feature_pos = result.iter().position(|&id| id == feature_id).unwrap();
+        let bugfix_pos = result.iter().position(|&id| id == bugfix_id).unwrap();
+        
+        assert!(main_pos < feature_pos);
+        assert!(feature_pos < bugfix_pos);
+    }
+
+    #[test]
+    fn test_topological_sort_complex_dag() {
+        let mut dag = Dag::new();
+        
+        // Create a more complex DAG:
+        //     main
+        //    /    \
+        // feat1   feat2
+        //    \    /
+        //    merge
+        let main_id = dag.create_branch("main".to_string());
+        let feat1_id = dag.create_branch("feat1".to_string());
+        let feat2_id = dag.create_branch("feat2".to_string());
+        let merge_id = dag.create_branch("merge".to_string());
+        
+        // Add relationships
+        dag.add_parent_child_relationship("feat1", "main").unwrap();
+        dag.add_parent_child_relationship("feat2", "main").unwrap();
+        dag.add_parent_child_relationship("merge", "feat1").unwrap();
+        dag.add_parent_child_relationship("merge", "feat2").unwrap();
+        
+        let result = dag.topological_sort().unwrap();
+        assert_eq!(result.len(), 4);
+        
+        // Check ordering constraints
+        let main_pos = result.iter().position(|&id| id == main_id).unwrap();
+        let feat1_pos = result.iter().position(|&id| id == feat1_id).unwrap();
+        let feat2_pos = result.iter().position(|&id| id == feat2_id).unwrap();
+        let merge_pos = result.iter().position(|&id| id == merge_id).unwrap();
+        
+        // main should come before both feat1 and feat2
+        assert!(main_pos < feat1_pos);
+        assert!(main_pos < feat2_pos);
+        
+        // both feat1 and feat2 should come before merge
+        assert!(feat1_pos < merge_pos);
+        assert!(feat2_pos < merge_pos);
+    }
+
+    #[test]
+    fn test_topological_sort_cycle_detection() {
+        let mut dag = Dag::new();
+        
+        let a_id = dag.create_branch("a".to_string());
+        let _b_id = dag.create_branch("b".to_string());
+        let c_id = dag.create_branch("c".to_string());
+        
+        // Create a cycle: a -> b -> c -> a
+        dag.add_parent_child_relationship("b", "a").unwrap();
+        dag.add_parent_child_relationship("c", "b").unwrap();
+        
+        // Manually create the cycle by adding the back edge (this bypasses normal validation)
+        if let Some(branch_a) = dag.get_branch_mut(&a_id) {
+            branch_a.parents.push(c_id);
+        }
+        if let Some(branch_c) = dag.get_branch_mut(&c_id) {
+            branch_c.children.push(a_id);
+        }
+        
+        let result = dag.topological_sort();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Cycle detected"));
+    }
+
+    #[test]
+    fn test_get_recursive_children_no_children() {
+        let mut dag = Dag::new();
+        let id = dag.create_branch("main".to_string());
+        
+        let children = dag.get_recursive_children(id);
+        assert_eq!(children.len(), 1);
+        assert!(children.contains(&id)); // Should include itself
+    }
+
+    #[test]
+    fn test_get_recursive_children_direct_children_only() {
+        let mut dag = Dag::new();
+        
+        let main_id = dag.create_branch("main".to_string());
+        let feat1_id = dag.create_branch("feat1".to_string());
+        let feat2_id = dag.create_branch("feat2".to_string());
+        
+        dag.add_parent_child_relationship("feat1", "main").unwrap();
+        dag.add_parent_child_relationship("feat2", "main").unwrap();
+        
+        let children = dag.get_recursive_children(main_id);
+        assert_eq!(children.len(), 3);
+        assert!(children.contains(&main_id));
+        assert!(children.contains(&feat1_id));
+        assert!(children.contains(&feat2_id));
+    }
+
+    #[test]
+    fn test_get_recursive_children_deep_hierarchy() {
+        let mut dag = Dag::new();
+        
+        // Create: main -> feat1 -> feat2 -> feat3
+        let main_id = dag.create_branch("main".to_string());
+        let feat1_id = dag.create_branch("feat1".to_string());
+        let feat2_id = dag.create_branch("feat2".to_string());
+        let feat3_id = dag.create_branch("feat3".to_string());
+        
+        dag.add_parent_child_relationship("feat1", "main").unwrap();
+        dag.add_parent_child_relationship("feat2", "feat1").unwrap();
+        dag.add_parent_child_relationship("feat3", "feat2").unwrap();
+        
+        // Test from main - should include all
+        let children_from_main = dag.get_recursive_children(main_id);
+        assert_eq!(children_from_main.len(), 4);
+        assert!(children_from_main.contains(&main_id));
+        assert!(children_from_main.contains(&feat1_id));
+        assert!(children_from_main.contains(&feat2_id));
+        assert!(children_from_main.contains(&feat3_id));
+        
+        // Test from feat1 - should include feat1, feat2, feat3 but not main
+        let children_from_feat1 = dag.get_recursive_children(feat1_id);
+        assert_eq!(children_from_feat1.len(), 3);
+        assert!(children_from_feat1.contains(&feat1_id));
+        assert!(children_from_feat1.contains(&feat2_id));
+        assert!(children_from_feat1.contains(&feat3_id));
+        assert!(!children_from_feat1.contains(&main_id));
+        
+        // Test from feat3 - should only include itself
+        let children_from_feat3 = dag.get_recursive_children(feat3_id);
+        assert_eq!(children_from_feat3.len(), 1);
+        assert!(children_from_feat3.contains(&feat3_id));
+    }
+
+    #[test]
+    fn test_get_recursive_children_complex_tree() {
+        let mut dag = Dag::new();
+        
+        // Create a tree structure:
+        //       main
+        //      /    \
+        //   feat1   feat2
+        //   /  \      |
+        // sub1 sub2  sub3
+        //       |
+        //     sub4
+        
+        let main_id = dag.create_branch("main".to_string());
+        let feat1_id = dag.create_branch("feat1".to_string());
+        let feat2_id = dag.create_branch("feat2".to_string());
+        let sub1_id = dag.create_branch("sub1".to_string());
+        let sub2_id = dag.create_branch("sub2".to_string());
+        let sub3_id = dag.create_branch("sub3".to_string());
+        let sub4_id = dag.create_branch("sub4".to_string());
+        
+        dag.add_parent_child_relationship("feat1", "main").unwrap();
+        dag.add_parent_child_relationship("feat2", "main").unwrap();
+        dag.add_parent_child_relationship("sub1", "feat1").unwrap();
+        dag.add_parent_child_relationship("sub2", "feat1").unwrap();
+        dag.add_parent_child_relationship("sub3", "feat2").unwrap();
+        dag.add_parent_child_relationship("sub4", "sub2").unwrap();
+        
+        // Test from main - should include all branches
+        let children_from_main = dag.get_recursive_children(main_id);
+        assert_eq!(children_from_main.len(), 7);
+        
+        // Test from feat1 - should include feat1, sub1, sub2, sub4
+        let children_from_feat1 = dag.get_recursive_children(feat1_id);
+        assert_eq!(children_from_feat1.len(), 4);
+        assert!(children_from_feat1.contains(&feat1_id));
+        assert!(children_from_feat1.contains(&sub1_id));
+        assert!(children_from_feat1.contains(&sub2_id));
+        assert!(children_from_feat1.contains(&sub4_id));
+        assert!(!children_from_feat1.contains(&feat2_id));
+        assert!(!children_from_feat1.contains(&sub3_id));
+        
+        // Test from feat2 - should include feat2 and sub3
+        let children_from_feat2 = dag.get_recursive_children(feat2_id);
+        assert_eq!(children_from_feat2.len(), 2);
+        assert!(children_from_feat2.contains(&feat2_id));
+        assert!(children_from_feat2.contains(&sub3_id));
     }
 }
 

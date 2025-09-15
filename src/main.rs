@@ -6,8 +6,9 @@ mod git;
 mod flow_tests;
 
 use clap::{Parser, Subcommand};
-use git::{get_current_git_branch, find_closest_parent, find_closest_children};
+use git::{get_current_git_branch, find_closest_parent, find_closest_children, fetch_from_origin, rebase_against_origin, rebase_branch};
 use serde::{read_dag_from_file, write_dag_to_file};
+use std::collections::HashSet;
 
 #[derive(Parser)]
 #[command(name = "dagit")]
@@ -24,7 +25,7 @@ enum Commands {
         /// Name of the branch to track (defaults to current branch)
         branch_name: Option<String>,
     },
-    /// Update command placeholder
+    /// Update all tracked branches by rebasing against origin and parents
     Update,
 }
 
@@ -122,7 +123,147 @@ fn handle_track_command(branch_name: Option<String>) {
 }
 
 fn handle_update_command() {
-    // TODO: Implement update command functionality
-    println!("Update command called - implementation pending");
+    println!("Starting update process...");
+    
+    // Load existing DAG from file
+    let mut dag = match read_dag_from_file() {
+        Ok(dag) => dag,
+        Err(e) => {
+            eprintln!("Failed to read DAG file: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    if dag.is_empty() {
+        println!("No branches are being tracked. Use 'dagit track' to add branches first.");
+        return;
+    }
+    
+    // Fetch latest changes from origin
+    println!("Fetching latest changes from origin...");
+    if let Err(e) = fetch_from_origin() {
+        eprintln!("Error: Failed to fetch from origin: {}", e);
+        std::process::exit(1);
+    }
+    
+    // Get branches in topological sort order
+    let sorted_branch_ids = match dag.topological_sort() {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    
+    // Track branches that failed rebase (and their children should be skipped)
+    let mut failed_branches = HashSet::new();
+    let mut skipped_branches = HashSet::new();
+    
+    println!("Processing {} branches in topological order...", sorted_branch_ids.len());
+    
+    // Process each branch in topological order
+    for &branch_id in &sorted_branch_ids {
+        // Get branch info first to avoid borrowing conflicts
+        let (branch_name, branch_parents, should_skip) = {
+            let branch = match dag.get_branch(&branch_id) {
+                Some(b) => b,
+                None => continue, // Should not happen
+            };
+            
+            let branch_name = branch.git_name.clone();
+            let branch_parents = branch.parents.clone();
+            
+            // Check if this branch should be skipped due to parent failure
+            let should_skip = branch.parents.iter().any(|parent_id| failed_branches.contains(parent_id));
+            
+            (branch_name, branch_parents, should_skip)
+        };
+        
+        if should_skip {
+            println!("  Skipping '{}' (parent branch failed rebase)", branch_name);
+            skipped_branches.insert(branch_id);
+            continue;
+        }
+        
+        println!("  Processing branch: {}", branch_name);
+        
+        // Get mutable reference to the branch for rebasing
+        let mut branch_failed = false;
+        
+        // Step 1: Rebase against origin
+        if let Some(branch_mut) = dag.get_branch_mut(&branch_id) {
+            print!("    Rebasing against origin... ");
+            match rebase_against_origin(branch_mut) {
+                Ok(()) => println!("✓ Success"),
+                Err(e) => {
+                    println!("✗ Failed: {}", e);
+                    branch_failed = true;
+                }
+            }
+        }
+        
+        // Step 2: Rebase against first parent (if no failure so far and has parents)
+        if !branch_failed && !branch_parents.is_empty() {
+            if branch_parents.len() > 1 {
+                todo!("Handle multiple parents - for now only supporting single parent");
+            }
+            
+            let first_parent_id = branch_parents[0];
+            let parent_name = {
+                if let Some(parent_branch) = dag.get_branch(&first_parent_id) {
+                    parent_branch.git_name.clone()
+                } else {
+                    eprintln!("    Error: Parent branch not found in DAG");
+                    continue;
+                }
+            };
+            
+            if let Some(branch_mut) = dag.get_branch_mut(&branch_id) {
+                print!("    Rebasing against parent '{}'... ", parent_name);
+                
+                match rebase_branch(branch_mut, &parent_name) {
+                    Ok(()) => println!("✓ Success"),
+                    Err(e) => {
+                        println!("✗ Failed: {}", e);
+                        branch_failed = true;
+                    }
+                }
+            }
+        } else if !branch_failed {
+            println!("    No parent to rebase against");
+        }
+        
+        // If any rebase failed, mark this branch as failed
+        if branch_failed {
+            failed_branches.insert(branch_id);
+            println!("    Branch '{}' failed - its children will be skipped", branch_name);
+        }
+    }
+    
+    // Save updated DAG back to file (to persist any last_failed_rebase updates)
+    match write_dag_to_file(&dag) {
+        Ok(()) => {},
+        Err(e) => {
+            eprintln!("Failed to write DAG file: {}", e);
+            std::process::exit(1);
+        }
+    }
+    
+    // Summary
+    let total_branches = sorted_branch_ids.len();
+    let failed_count = failed_branches.len();
+    let skipped_count = skipped_branches.len();
+    let success_count = total_branches - failed_count - skipped_count;
+    
+    println!();
+    println!("Update completed:");
+    println!("  ✓ {} branches successfully updated", success_count);
+    println!("  ✗ {} branches failed", failed_count);
+    println!("  - {} branches skipped (due to parent failures)", skipped_count);
+    
+    if failed_count > 0 || skipped_count > 0 {
+        println!();
+        println!("Some branches had issues. Check the output above for details.");
+    }
 }
 

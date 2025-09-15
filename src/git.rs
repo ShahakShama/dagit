@@ -254,6 +254,41 @@ pub fn rebase_branch(branch: &mut Branch, target_branch: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Fetch latest changes from origin for all branches
+pub fn fetch_from_origin() -> Result<(), String> {
+    let output = Command::new("git")
+        .args(["fetch", "origin"])
+        .output()
+        .map_err(|e| format!("Failed to execute git fetch: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to fetch from origin: {}", stderr));
+    }
+
+    Ok(())
+}
+
+/// Rebase a branch against its origin counterpart
+/// Returns Ok(()) on success, Err(message) on failure
+pub fn rebase_against_origin(branch: &mut Branch) -> Result<(), String> {
+    let branch_name = &branch.git_name;
+    let origin_branch = format!("origin/{}", branch_name);
+    
+    // First check if the origin branch exists
+    let check_output = Command::new("git")
+        .args(["rev-parse", "--verify", &origin_branch])
+        .output()
+        .map_err(|e| format!("Failed to check if origin branch exists: {}", e))?;
+    
+    if !check_output.status.success() {
+        return Err(format!("Origin branch '{}' does not exist - skipping origin rebase", origin_branch));
+    }
+    
+    // Use the existing rebase_branch function to perform the actual rebase
+    rebase_branch(branch, &origin_branch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

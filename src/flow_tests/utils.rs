@@ -59,6 +59,12 @@ pub struct FlowTest {
     pub expected_dag: Option<Dag>,
 }
 
+pub struct FlowTestWithOrigin {
+    pub origin_commands: Vec<TestCommand>,  // Commands to run in origin repo
+    pub clone_commands: Vec<TestCommand>,   // Commands to run in clone repo
+    pub expected_dag: Option<Dag>,
+}
+
 impl FlowTest {
     pub fn new() -> Self {
         FlowTest {
@@ -79,6 +85,31 @@ impl FlowTest {
     
     pub fn add_command(mut self, command: TestCommand) -> Self {
         self.commands.push(command);
+        self
+    }
+}
+
+impl FlowTestWithOrigin {
+    pub fn new() -> Self {
+        FlowTestWithOrigin {
+            origin_commands: Vec::new(),
+            clone_commands: Vec::new(),
+            expected_dag: None,
+        }
+    }
+    
+    pub fn with_commands(mut self, commands: Vec<TestCommand>) -> Self {
+        self.origin_commands = commands;
+        self
+    }
+    
+    pub fn with_clone_commands(mut self, commands: Vec<TestCommand>) -> Self {
+        self.clone_commands = commands;
+        self
+    }
+    
+    pub fn with_expected_dag(mut self, dag: Dag) -> Self {
+        self.expected_dag = Some(dag);
         self
     }
 }
@@ -126,6 +157,92 @@ pub fn run_flow_test(test: FlowTest) -> Result<(), String> {
             // Always restore directory before returning error
             let _ = env::set_current_dir(&original_dir);
             return Err(e);
+        }
+    }
+    
+    // Check expected DAG if provided
+    if let Some(expected_dag) = test.expected_dag {
+        verify_dag_state(expected_dag)?;
+    }
+    
+    // Restore original directory
+    env::set_current_dir(&original_dir).map_err(|e| format!("Failed to restore directory: {}", e))?;
+    
+    Ok(())
+}
+
+pub fn run_flow_test_with_origin(test: FlowTestWithOrigin) -> Result<(), String> {
+    let origin_dir = TempDir::new().map_err(|e| format!("Failed to create origin temp dir: {}", e))?;
+    let clone_dir = TempDir::new().map_err(|e| format!("Failed to create clone temp dir: {}", e))?;
+    let original_dir = env::current_dir().map_err(|e| format!("Failed to get current dir: {}", e))?;
+    
+    // === Setup Origin Repository ===
+    env::set_current_dir(origin_dir.path()).map_err(|e| format!("Failed to change to origin dir: {}", e))?;
+    
+    // Setup basic git repository in origin
+    setup_git_repo()?;
+    
+    // Execute origin commands
+    for (i, command) in test.origin_commands.iter().enumerate() {
+        let result = match command {
+            TestCommand::Git { args, should_succeed } => {
+                execute_git_command(args, *should_succeed, i)
+            }
+            TestCommand::Dagit { .. } => {
+                return Err("Dagit commands not supported in origin repository setup".to_string());
+            }
+        };
+        
+        if let Err(e) = result {
+            let _ = env::set_current_dir(&original_dir);
+            return Err(format!("Origin repo setup failed: {}", e));
+        }
+    }
+    
+    let origin_path = origin_dir.path().to_path_buf();
+    
+    // === Setup Clone Repository ===
+    env::set_current_dir(clone_dir.path()).map_err(|e| format!("Failed to change to clone dir: {}", e))?;
+    
+    // Clone from origin
+    run_command("git", &["clone", origin_path.to_str().unwrap(), "."], true, "clone")?;
+    
+    // Configure clone repo
+    run_command("git", &["config", "--local", "user.name", "Test User"], true, "clone setup")?;
+    run_command("git", &["config", "--local", "user.email", "test@example.com"], true, "clone setup")?;
+    
+    // Get path to dagit binary
+    let dagit_path = original_dir.join("target").join("debug").join("dagit");
+    if !dagit_path.exists() {
+        // Build the binary first
+        env::set_current_dir(&original_dir).map_err(|e| format!("Failed to return to original dir: {}", e))?;
+        let build_output = Command::new("cargo")
+            .args(&["build", "--bin", "dagit"])
+            .output()
+            .map_err(|e| format!("Failed to build dagit: {}", e))?;
+        
+        if !build_output.status.success() {
+            return Err(format!("Failed to build dagit binary: {}", String::from_utf8_lossy(&build_output.stderr)));
+        }
+        
+        // Return to clone directory
+        env::set_current_dir(clone_dir.path()).map_err(|e| format!("Failed to change back to clone dir: {}", e))?;
+    }
+    
+    // Execute clone commands
+    for (i, command) in test.clone_commands.iter().enumerate() {
+        let result = match command {
+            TestCommand::Git { args, should_succeed } => {
+                execute_git_command(args, *should_succeed, i)
+            }
+            TestCommand::Dagit { args, should_succeed } => {
+                execute_dagit_command(&dagit_path, args, *should_succeed, i)
+            }
+        };
+        
+        if let Err(e) = result {
+            let _ = env::set_current_dir(&original_dir);
+            return Err(format!("Clone repo command failed: {}", e));
         }
     }
     
