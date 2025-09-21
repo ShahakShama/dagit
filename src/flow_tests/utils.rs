@@ -321,14 +321,19 @@ fn execute_dagit_command(dagit_path: &Path, args: &[String], should_succeed: boo
     let success = output.status.success();
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    
+
+    // Debug: always print stdout for now
+    if !stdout.is_empty() {
+        println!("Dagit command {} output: {}", command_index, stdout);
+    }
+
     if success != should_succeed {
         return Err(format!(
             "Dagit command {} expected success={}, got success={}\nCommand: dagit {}\nStdout: {}\nStderr: {}",
             command_index, should_succeed, success, args.join(" "), stdout, stderr
         ));
     }
-    
+
     Ok(())
 }
 

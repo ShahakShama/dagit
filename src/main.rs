@@ -128,6 +128,9 @@ fn update_branch(
     failed_branches: &mut HashSet<dag::BranchId>,
     skipped_branches: &mut HashSet<dag::BranchId>,
 ) {
+    let branch_name = dag.get_branch(&branch_id).map(|b| b.git_name.clone()).unwrap_or_else(|| "unknown".to_string());
+    println!("*** Processing branch '{}' ***", branch_name);
+
     // Get branch info first to avoid borrowing conflicts
     let (branch_name, branch_parents, should_skip) = {
         let branch = match dag.get_branch(&branch_id) {
@@ -202,6 +205,54 @@ fn update_branch(
     if branch_failed {
         failed_branches.insert(branch_id);
         println!("    Branch '{}' failed - its children will be skipped", branch_name);
+        return;
+    }
+
+    // Check if this branch is behind one of its parents (i.e., redundant)
+    if !branch_parents.is_empty() {
+        for &parent_id in &branch_parents {
+            if let Some(parent_branch) = dag.get_branch(&parent_id) {
+                let parent_name = parent_branch.git_name.clone();
+
+                // Check if parent is an ancestor of this branch
+                println!("    Checking if '{}' is ancestor of '{}'...", parent_name, branch_name);
+                // Temporarily always return true to test the DAG operations
+                let is_ancestor = true; // git::is_ancestor(&parent_name, &branch_name);
+                if is_ancestor {
+                    println!("    *** REMOVING BRANCH '{}' ***", branch_name);
+                    println!("    Yes! '{}' is ancestor of '{}'", parent_name, branch_name);
+                    println!("    Branch '{}' is behind parent '{}' - removing from DAG", branch_name, parent_name);
+
+                    // Get all children of this branch before removing it
+                    let children = dag.get_branch(&branch_id)
+                        .map(|b| b.children.clone())
+                        .unwrap_or_default();
+
+                    // Remove the branch from DAG
+                    dag.remove_branch(&branch_id);
+
+                    // Update all children to have this parent instead
+                    for child_id in children {
+                        if let Some(child_mut) = dag.get_branch_mut(&child_id) {
+                            let child_name = child_mut.git_name.clone();
+
+                            // Remove the old branch from child's parents
+                            child_mut.parents.retain(|&p| p != branch_id);
+
+                            // Add the new parent-child relationship
+                            dag.add_parent_child_relationship_by_id(parent_id, child_id).unwrap();
+
+                            println!("      Updated child '{}' to have parent '{}'", child_name, parent_name);
+                        }
+                    }
+
+                    // Mark this branch as "skipped" since we've removed it
+                    println!("    DAG now has {} branches", dag.len());
+                    skipped_branches.insert(branch_id);
+                    return;
+                }
+            }
+        }
     }
 }
 

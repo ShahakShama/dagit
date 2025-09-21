@@ -133,6 +133,33 @@ impl Dag {
         
         Ok(())
     }
+
+    /// Add a parent relationship by branch IDs (this also adds the corresponding child relationship)
+    pub fn add_parent_child_relationship_by_id(&mut self, child_id: BranchId, parent_id: BranchId) -> Result<(), String> {
+        // Verify both branches exist
+        if !self.branches.contains_key(&child_id) {
+            return Err(format!("Child branch with ID {} not found in DAG", child_id.0));
+        }
+        if !self.branches.contains_key(&parent_id) {
+            return Err(format!("Parent branch with ID {} not found in DAG", parent_id.0));
+        }
+        
+        // Add parent to child's parents list (if not already present)
+        if let Some(child_branch) = self.branches.get_mut(&child_id) {
+            if !child_branch.parents.contains(&parent_id) {
+                child_branch.parents.push(parent_id);
+            }
+        }
+        
+        // Add child to parent's children list (if not already present)
+        if let Some(parent_branch) = self.branches.get_mut(&parent_id) {
+            if !parent_branch.children.contains(&child_id) {
+                parent_branch.children.push(child_id);
+            }
+        }
+        
+        Ok(())
+    }
     
     /// Get branches in topological sort order (parents before children)
     /// Returns an error if there are cycles in the DAG

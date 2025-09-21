@@ -1,4 +1,4 @@
-use super::utils::{FlowTest, TestCommand, run_flow_test};
+use super::utils::{FlowTest, FlowTestWithOrigin, TestCommand, run_flow_test, run_flow_test_with_origin};
 use crate::dag::Dag;
 
 #[test]
@@ -181,7 +181,7 @@ fn test_update_command_no_origin_changes() {
     run_flow_test(test).expect("Update without origin should fail gracefully");
 }
 
-#[test] 
+#[test]
 #[serial_test::serial]
 fn test_update_command_empty_dag() {
     // Test update command when no branches are tracked
@@ -190,7 +190,45 @@ fn test_update_command_empty_dag() {
             // Try update without tracking any branches
             TestCommand::dagit_ok(&["update"]), // Should succeed but do nothing
         ]);
-    
+
     run_flow_test(test).expect("Update with empty DAG should succeed");
+}
+
+#[test]
+#[serial_test::serial]
+fn test_redundant_branch_detection() {
+    // Test that redundant branches are automatically removed during update
+    // This verifies that branches can be tracked, relationships detected, and redundant branches cleaned up
+
+    let mut expected_dag = Dag::new();
+    expected_dag.create_branch("main".to_string());
+
+    let test = FlowTestWithOrigin::new()
+        .with_commands(vec![
+            // === Setup in origin repo ===
+            // Create initial commit in origin
+            TestCommand::git_ok(&["commit", "--allow-empty", "-m", "Initial commit"]),
+        ])
+        .with_clone_commands(vec![
+            // === Setup in clone repo ===
+            // Track main branch in dagit first
+            TestCommand::dagit_ok(&["track", "main"]),
+
+            // Create feature branch from main with additional commits
+            TestCommand::git_ok(&["checkout", "-b", "feature"]),
+            TestCommand::git_ok(&["commit", "--allow-empty", "-m", "Feature commit 1"]),
+            TestCommand::git_ok(&["commit", "--allow-empty", "-m", "Feature commit 2"]),
+
+            // Track feature branch in dagit (should auto-detect main as parent)
+            TestCommand::dagit_ok(&["track", "feature"]),
+
+            // Manually rebase main onto feature (setting up the scenario for redundant branch detection)
+            TestCommand::git_ok(&["checkout", "main"]),
+            TestCommand::git_ok(&["rebase", "feature"]),
+            TestCommand::dagit_ok(&["update"]),
+        ])
+        .with_expected_dag(expected_dag);
+
+    run_flow_test_with_origin(test).expect("Redundant branch detection should work");
 }
 
