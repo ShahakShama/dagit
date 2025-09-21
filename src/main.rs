@@ -122,6 +122,89 @@ fn handle_track_command(branch_name: Option<String>) {
     }
 }
 
+fn update_branch(
+    dag: &mut dag::Dag,
+    branch_id: dag::BranchId,
+    failed_branches: &mut HashSet<dag::BranchId>,
+    skipped_branches: &mut HashSet<dag::BranchId>,
+) {
+    // Get branch info first to avoid borrowing conflicts
+    let (branch_name, branch_parents, should_skip) = {
+        let branch = match dag.get_branch(&branch_id) {
+            Some(b) => b,
+            None => return, // Should not happen
+        };
+
+        let branch_name = branch.git_name.clone();
+        let branch_parents = branch.parents.clone();
+
+        // Check if this branch should be skipped due to parent failure
+        let should_skip = branch.parents.iter().any(|parent_id| failed_branches.contains(parent_id));
+
+        (branch_name, branch_parents, should_skip)
+    };
+
+    if should_skip {
+        println!("  Skipping '{}' (parent branch failed rebase)", branch_name);
+        skipped_branches.insert(branch_id);
+        return;
+    }
+
+    println!("  Processing branch: {}", branch_name);
+
+    // Get mutable reference to the branch for rebasing
+    let mut branch_failed = false;
+
+    // Step 1: Rebase against origin
+    if let Some(branch_mut) = dag.get_branch_mut(&branch_id) {
+        print!("    Rebasing against origin... ");
+        match rebase_against_origin(branch_mut) {
+            Ok(()) => println!("✓ Success"),
+            Err(e) => {
+                println!("✗ Failed: {}", e);
+                branch_failed = true;
+            }
+        }
+    }
+
+    // Step 2: Rebase against first parent (if no failure so far and has parents)
+    if !branch_failed && !branch_parents.is_empty() {
+        if branch_parents.len() > 1 {
+            todo!("Handle multiple parents - for now only supporting single parent");
+        }
+
+        let first_parent_id = branch_parents[0];
+        let parent_name = {
+            if let Some(parent_branch) = dag.get_branch(&first_parent_id) {
+                parent_branch.git_name.clone()
+            } else {
+                eprintln!("    Error: Parent branch not found in DAG");
+                return;
+            }
+        };
+
+        if let Some(branch_mut) = dag.get_branch_mut(&branch_id) {
+            print!("    Rebasing against parent '{}'... ", parent_name);
+
+            match rebase_branch(branch_mut, &parent_name) {
+                Ok(()) => println!("✓ Success"),
+                Err(e) => {
+                    println!("✗ Failed: {}", e);
+                    branch_failed = true;
+                }
+            }
+        }
+    } else if !branch_failed {
+        println!("    No parent to rebase against");
+    }
+
+    // If any rebase failed, mark this branch as failed
+    if branch_failed {
+        failed_branches.insert(branch_id);
+        println!("    Branch '{}' failed - its children will be skipped", branch_name);
+    }
+}
+
 fn handle_update_command() {
     println!("Starting update process...");
     
@@ -156,88 +239,14 @@ fn handle_update_command() {
     };
     
     // Track branches that failed rebase (and their children should be skipped)
-    let mut failed_branches = HashSet::new();
-    let mut skipped_branches = HashSet::new();
+    let mut failed_branches: HashSet<dag::BranchId> = HashSet::new();
+    let mut skipped_branches: HashSet<dag::BranchId> = HashSet::new();
     
     println!("Processing {} branches in topological order...", sorted_branch_ids.len());
     
     // Process each branch in topological order
     for &branch_id in &sorted_branch_ids {
-        // Get branch info first to avoid borrowing conflicts
-        let (branch_name, branch_parents, should_skip) = {
-            let branch = match dag.get_branch(&branch_id) {
-                Some(b) => b,
-                None => continue, // Should not happen
-            };
-            
-            let branch_name = branch.git_name.clone();
-            let branch_parents = branch.parents.clone();
-            
-            // Check if this branch should be skipped due to parent failure
-            let should_skip = branch.parents.iter().any(|parent_id| failed_branches.contains(parent_id));
-            
-            (branch_name, branch_parents, should_skip)
-        };
-        
-        if should_skip {
-            println!("  Skipping '{}' (parent branch failed rebase)", branch_name);
-            skipped_branches.insert(branch_id);
-            continue;
-        }
-        
-        println!("  Processing branch: {}", branch_name);
-        
-        // Get mutable reference to the branch for rebasing
-        let mut branch_failed = false;
-        
-        // Step 1: Rebase against origin
-        if let Some(branch_mut) = dag.get_branch_mut(&branch_id) {
-            print!("    Rebasing against origin... ");
-            match rebase_against_origin(branch_mut) {
-                Ok(()) => println!("✓ Success"),
-                Err(e) => {
-                    println!("✗ Failed: {}", e);
-                    branch_failed = true;
-                }
-            }
-        }
-        
-        // Step 2: Rebase against first parent (if no failure so far and has parents)
-        if !branch_failed && !branch_parents.is_empty() {
-            if branch_parents.len() > 1 {
-                todo!("Handle multiple parents - for now only supporting single parent");
-            }
-            
-            let first_parent_id = branch_parents[0];
-            let parent_name = {
-                if let Some(parent_branch) = dag.get_branch(&first_parent_id) {
-                    parent_branch.git_name.clone()
-                } else {
-                    eprintln!("    Error: Parent branch not found in DAG");
-                    continue;
-                }
-            };
-            
-            if let Some(branch_mut) = dag.get_branch_mut(&branch_id) {
-                print!("    Rebasing against parent '{}'... ", parent_name);
-                
-                match rebase_branch(branch_mut, &parent_name) {
-                    Ok(()) => println!("✓ Success"),
-                    Err(e) => {
-                        println!("✗ Failed: {}", e);
-                        branch_failed = true;
-                    }
-                }
-            }
-        } else if !branch_failed {
-            println!("    No parent to rebase against");
-        }
-        
-        // If any rebase failed, mark this branch as failed
-        if branch_failed {
-            failed_branches.insert(branch_id);
-            println!("    Branch '{}' failed - its children will be skipped", branch_name);
-        }
+        update_branch(&mut dag, branch_id, &mut failed_branches, &mut skipped_branches);
     }
     
     // Save updated DAG back to file (to persist any last_failed_rebase updates)
