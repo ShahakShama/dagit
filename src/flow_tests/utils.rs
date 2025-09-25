@@ -171,6 +171,9 @@ pub fn run_flow_test(test: FlowTest) -> Result<(), String> {
     // Always restore original directory, even if the test failed
     let _ = env::set_current_dir(&original_dir);
 
+    // If the test failed, try to print the current DAG state for debugging
+    print_dag_state_on_error(&result);
+
     result
 }
 
@@ -260,7 +263,28 @@ pub fn run_flow_test_with_origin(test: FlowTestWithOrigin) -> Result<(), String>
     // Always restore original directory, even if the test failed
     let _ = env::set_current_dir(&original_dir);
 
+    // If the test failed, try to print the current DAG state for debugging
+    print_dag_state_on_error(&result);
+
     result
+}
+
+fn print_dag_state_on_error(result: &Result<(), String>) {
+    if let Err(ref e) = result {
+        println!("\n=== TEST FAILED - Current DAG State ===");
+        if let Ok(current_dag) = read_dag_from_file() {
+            println!("DAG contains {} branches:", current_dag.len());
+            for (id, branch) in &current_dag.branches {
+                println!("  Branch {} (ID {}):", branch.git_name, id.0);
+                println!("    Parents: {:?}", branch.parents.iter().map(|p| format!("{} ({})", current_dag.branches.get(p).map(|b| b.git_name.as_str()).unwrap_or("unknown"), p.0)).collect::<Vec<_>>());
+                println!("    Children: {:?}", branch.children.iter().map(|c| format!("{} ({})", current_dag.branches.get(c).map(|b| b.git_name.as_str()).unwrap_or("unknown"), c.0)).collect::<Vec<_>>());
+            }
+        } else {
+            println!("Could not read current DAG state for debugging");
+        }
+        println!("Error: {}", e);
+        println!("=== END DAG STATE ===\n");
+    }
 }
 
 fn setup_git_repo() -> Result<(), String> {
