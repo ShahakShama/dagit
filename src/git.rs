@@ -1,6 +1,12 @@
 use std::process::Command;
 use crate::dag::Branch;
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum RebaseOriginError {
+    OriginDoesntExist,
+    Other(String),
+}
+
 /// Get the current git branch name
 /// 
 /// Returns an error if:
@@ -270,8 +276,8 @@ pub fn fetch_from_origin() -> Result<(), String> {
 }
 
 /// Rebase a branch against its origin counterpart
-/// Returns Ok(()) on success, Err(message) on failure
-pub fn rebase_against_origin(branch: &mut Branch) -> Result<(), String> {
+/// Returns Ok(()) on success, Err(RebaseOriginError) on failure
+pub fn rebase_against_origin(branch: &mut Branch) -> Result<(), RebaseOriginError> {
     let branch_name = &branch.git_name;
     let origin_branch = format!("origin/{}", branch_name);
     
@@ -279,14 +285,14 @@ pub fn rebase_against_origin(branch: &mut Branch) -> Result<(), String> {
     let check_output = Command::new("git")
         .args(["rev-parse", "--verify", &origin_branch])
         .output()
-        .map_err(|e| format!("Failed to check if origin branch exists: {}", e))?;
-    
+        .map_err(|e| RebaseOriginError::Other(format!("Failed to check if origin branch exists: {}", e)))?;
+
     if !check_output.status.success() {
-        return Err(format!("Origin branch '{}' does not exist - skipping origin rebase", origin_branch));
+        return Err(RebaseOriginError::OriginDoesntExist);
     }
-    
+
     // Use the existing rebase_branch function to perform the actual rebase
-    rebase_branch(branch, &origin_branch)
+    rebase_branch(branch, &origin_branch).map_err(RebaseOriginError::Other)
 }
 
 #[cfg(test)]

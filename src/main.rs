@@ -6,7 +6,7 @@ mod git;
 mod flow_tests;
 
 use clap::{Parser, Subcommand};
-use git::{get_current_git_branch, find_closest_parent, find_closest_children, fetch_from_origin, rebase_against_origin, rebase_branch};
+use git::{get_current_git_branch, find_closest_parent, find_closest_children, fetch_from_origin, rebase_against_origin, rebase_branch, RebaseOriginError};
 use serde::{read_dag_from_file, write_dag_to_file};
 use std::collections::HashSet;
 
@@ -163,7 +163,10 @@ fn update_branch(
         print!("    Rebasing against origin... ");
         match rebase_against_origin(branch_mut) {
             Ok(()) => println!("✓ Success"),
-            Err(e) => {
+            Err(RebaseOriginError::OriginDoesntExist) => {
+                println!("✗ Skipped: origin branch does not exist");
+            }
+            Err(RebaseOriginError::Other(e)) => {
                 println!("✗ Failed: {}", e);
                 branch_failed = true;
             }
@@ -235,6 +238,13 @@ fn update_branch(
 
                     // Remove the branch from DAG
                     dag.remove_branch(&branch_id);
+
+                    // Remove the branch from its parents' children lists
+                    for &parent_id in &branch_parents {
+                        if let Some(parent_mut) = dag.get_branch_mut(&parent_id) {
+                            parent_mut.children.retain(|&c| c != branch_id);
+                        }
+                    }
 
                     // Update all children to have this parent instead
                     for child_id in children {
