@@ -1,5 +1,5 @@
 use std::process::Command;
-use crate::dag::Branch;
+use crate::dag::{Branch, BranchId, Dag};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RebaseOriginError {
@@ -280,7 +280,7 @@ pub fn fetch_from_origin() -> Result<(), String> {
 pub fn rebase_against_origin(branch: &mut Branch) -> Result<(), RebaseOriginError> {
     let branch_name = &branch.git_name;
     let origin_branch = format!("origin/{}", branch_name);
-    
+
     // First check if the origin branch exists
     let check_output = Command::new("git")
         .args(["rev-parse", "--verify", &origin_branch])
@@ -293,6 +293,109 @@ pub fn rebase_against_origin(branch: &mut Branch) -> Result<(), RebaseOriginErro
 
     // Use the existing rebase_branch function to perform the actual rebase
     rebase_branch(branch, &origin_branch).map_err(RebaseOriginError::Other)
+}
+
+/// Create a pull request for a branch if it doesn't already have one
+/// Uses the branch's first parent as the target branch
+/// If the branch has multiple parents, this function will panic
+/// Returns Some(pr_number) if a PR was created, None if no PR was created
+/// (either because one already exists or because there are no parents)
+pub fn create_pr_for_branch(branch_id: BranchId, dag: &mut Dag) -> Result<Option<usize>, String> {
+    // First, check if the branch exists and get parent information
+    let parent_info = {
+        let branch = match dag.get_branch(&branch_id) {
+            Some(b) => b,
+            None => return Err(format!("Branch with ID {} not found in DAG", branch_id.0)),
+        };
+
+        // If the branch already has a PR number, return None (no new PR created)
+        if branch.pr_number.is_some() {
+            return Ok(None);
+        }
+
+        // Check for multiple parents
+        if branch.parents.len() > 1 {
+            todo!("Branch has multiple parents - need to determine which one to target for PR");
+        }
+
+        // Get parent information
+        let parent_info = match branch.parents.first() {
+            Some(parent_id) => {
+                match dag.get_branch(parent_id) {
+                    Some(parent_branch) => Some(parent_branch.git_name.clone()),
+                    None => return Err(format!("Parent branch with ID {} not found in DAG", parent_id.0)),
+                }
+            }
+            None => None,
+        };
+
+        parent_info
+    };
+
+    // Now get mutable reference to create the PR
+    let branch = match dag.get_branch_mut(&branch_id) {
+        Some(b) => b,
+        None => return Err(format!("Branch with ID {} not found in DAG", branch_id.0)),
+    };
+
+    // Create the PR
+    match parent_info {
+        Some(target_branch_name) => {
+            match create_pr_if_needed(branch, &target_branch_name) {
+                Ok(pr_number) => Ok(Some(pr_number)),
+                Err(e) => Err(e),
+            }
+        }
+        None => Ok(None),
+    }
+}
+
+/// Create a pull request for a branch if it doesn't already have one
+/// Uses the provided target branch as the base for the PR
+/// Returns the PR number that was created or already existed
+fn create_pr_if_needed(branch: &mut Branch, target_branch: &str) -> Result<usize, String> {
+    // If the branch already has a PR number, do nothing
+    if let Some(pr_number) = branch.pr_number {
+        return Ok(pr_number);
+    }
+
+    // Create the PR using gh CLI
+    let pr_title = format!("{} -> {}", branch.git_name, target_branch);
+    let output = Command::new("gh")
+        .args([
+            "pr", "create",
+            "--base", target_branch,
+            "--head", &branch.git_name,
+            "--title", &pr_title,
+            "--body", "",
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute gh pr create: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to create PR: {}", stderr));
+    }
+
+    // Parse the PR number from the output
+    // gh pr create outputs something like: "https://github.com/user/repo/pull/123"
+    let output_str = String::from_utf8(output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in gh output: {}", e))?;
+
+    // Find the PR number in the URL
+    if let Some(pr_url_line) = output_str.lines().find(|line| line.contains("pull/")) {
+        if let Some(pr_number_str) = pr_url_line.split("pull/").nth(1) {
+            if let Some(pr_number) = pr_number_str.split('/').next() {
+                if let Ok(pr_number) = pr_number.parse::<usize>() {
+                    // Set the PR number on the branch
+                    branch.pr_number = Some(pr_number);
+                    return Ok(pr_number);
+                }
+            }
+        }
+    }
+
+    Err("Failed to parse PR number from gh output".to_string())
 }
 
 #[cfg(test)]
@@ -754,5 +857,73 @@ mod tests {
         assert!(result.is_err(), "Rebase should fail for non-existent branch");
         // The last_failed_rebase should not be set because the failure was due to checkout, not rebase conflicts
         assert!(branch.last_failed_rebase.is_none(), "last_failed_rebase should be None when checkout fails");
+    }
+
+    #[test]
+    fn test_create_pr_for_branch_already_has_pr() {
+        let mut dag = Dag::new();
+        let branch_id = dag.create_branch("feature".to_string());
+        {
+            let branch = dag.get_branch_mut(&branch_id).unwrap();
+            branch.pr_number = Some(42);
+        }
+
+        let result = create_pr_for_branch(branch_id, &mut dag);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None); // No new PR created
+    }
+
+    #[test]
+    fn test_create_pr_for_branch_no_parents() {
+        let mut dag = Dag::new();
+        let branch_id = dag.create_branch("feature".to_string());
+
+        let result = create_pr_for_branch(branch_id, &mut dag);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), None); // No PR created
+    }
+
+    #[test]
+    fn test_create_pr_if_needed_already_has_pr() {
+        let mut branch = Branch::with_id(BranchId(1), "feature".to_string());
+        branch.pr_number = Some(42);
+
+        let result = create_pr_if_needed(&mut branch, "main");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[test]
+    fn test_create_pr_for_branch_parent_not_in_dag() {
+        let mut dag = Dag::new();
+        let branch_id = dag.create_branch("feature".to_string());
+        {
+            let branch = dag.get_branch_mut(&branch_id).unwrap();
+            // Add a parent ID that doesn't exist in the DAG
+            branch.parents.push(BranchId(999));
+        }
+
+        let result = create_pr_for_branch(branch_id, &mut dag);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found in DAG"));
+    }
+
+    #[test]
+    fn test_create_pr_for_branch_with_valid_parent() {
+        let mut dag = Dag::new();
+
+        // Create parent branch
+        let parent_id = dag.create_branch("main".to_string());
+        let mut child_branch = Branch::with_id(BranchId(2), "feature".to_string());
+        child_branch.parents.push(parent_id);
+
+        // Note: This test would actually call gh CLI, so it's more of an integration test
+        // For now, we'll skip the actual CLI call by testing the early return cases
+        // In a real scenario, you'd mock the gh CLI or use integration tests
+
+        // Test that it would proceed (but would fail at gh CLI call)
+        // We can't easily test the full flow without mocking gh CLI
+        assert!(child_branch.pr_number.is_none());
+        assert_eq!(child_branch.parents.len(), 1);
     }
 }

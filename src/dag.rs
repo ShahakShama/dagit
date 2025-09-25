@@ -16,6 +16,8 @@ pub struct Branch {
     pub git_name: String,
     /// Last failed rebase attempt (target branch name)
     pub last_failed_rebase: Option<String>,
+    /// Pull request number associated with this branch
+    pub pr_number: Option<usize>,
 }
 
 impl Branch {
@@ -27,6 +29,7 @@ impl Branch {
             children: Vec::new(),
             git_name,
             last_failed_rebase: None,
+            pr_number: None,
         }
     }
 }
