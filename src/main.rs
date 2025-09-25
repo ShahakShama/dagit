@@ -262,6 +262,13 @@ fn update_branch(
                             // Add the new parent-child relationship
                             dag.add_parent_child_relationship_by_id(parent_id, child_id).unwrap();
 
+                            // Update the PR target to point to the new parent
+                            if let Err(e) = git::update_pr_target_for_branch(child_id, &dag, &parent_name) {
+                                println!("      Warning: Failed to update PR target for '{}': {}", child_name, e);
+                            } else {
+                                println!("      Updated PR target for '{}' to '{}'", child_name, parent_name);
+                            }
+
                             println!("      Updated child '{}' to have parent '{}'", child_name, parent_name);
                         }
                     }

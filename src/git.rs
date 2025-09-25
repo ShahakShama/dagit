@@ -398,6 +398,49 @@ fn create_pr_if_needed(branch: &mut Branch, target_branch: &str) -> Result<usize
     Err("Failed to parse PR number from gh output".to_string())
 }
 
+/// Update the target branch (base) of an existing pull request for a branch
+/// Takes a branch ID and DAG reference, and a new target branch name
+/// Updates the PR's base branch to the specified target branch
+/// Returns Ok(()) on success, Err(message) on failure
+pub fn update_pr_target_for_branch(branch_id: BranchId, dag: &Dag, new_target_branch: &str) -> Result<(), String> {
+    // Get the branch from the DAG
+    let branch = match dag.get_branch(&branch_id) {
+        Some(b) => b,
+        None => return Err(format!("Branch with ID {} not found in DAG", branch_id.0)),
+    };
+
+    update_pr_target(branch, new_target_branch)
+}
+
+/// Update the target branch (base) of an existing pull request
+/// Takes a branch reference and a new target branch name
+/// Updates the PR's base branch to the specified target branch
+/// Returns Ok(()) on success, Err(message) on failure
+pub fn update_pr_target(branch: &Branch, new_target_branch: &str) -> Result<(), String> {
+    // Check if the branch has a PR number
+    let pr_number = match branch.pr_number {
+        Some(number) => number,
+        None => return Err(format!("Branch '{}' does not have an associated pull request", branch.git_name)),
+    };
+
+    // Update the PR using gh CLI
+    let output = Command::new("gh")
+        .args([
+            "pr", "edit",
+            &pr_number.to_string(),
+            "--base", new_target_branch,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to execute gh pr edit: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("Failed to update PR #{} target to '{}': {}", pr_number, new_target_branch, stderr));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -925,5 +968,52 @@ mod tests {
         // We can't easily test the full flow without mocking gh CLI
         assert!(child_branch.pr_number.is_none());
         assert_eq!(child_branch.parents.len(), 1);
+    }
+
+    #[test]
+    fn test_update_pr_target_no_pr() {
+        let branch = Branch::with_id(BranchId(1), "feature".to_string());
+
+        let result = update_pr_target(&branch, "main");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not have an associated pull request"));
+    }
+
+    #[test]
+    fn test_update_pr_target_with_pr() {
+        let mut branch = Branch::with_id(BranchId(1), "feature".to_string());
+        branch.pr_number = Some(42);
+
+        // Note: This test would actually call gh CLI, so it's more of an integration test
+        // For now, we test that it would attempt to call gh CLI (but would fail without gh CLI)
+        // In a real scenario, you'd mock the gh CLI or use integration tests
+
+        let result = update_pr_target(&branch, "main");
+        // This will fail because gh CLI is not available in test environment,
+        // but we can verify it attempts the operation by checking the error message
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err();
+        assert!(error_msg.contains("Failed to execute gh pr edit") ||
+                error_msg.contains("Failed to update PR #42"));
+    }
+
+    #[test]
+    fn test_update_pr_target_for_branch_not_in_dag() {
+        let dag = Dag::new();
+        let branch_id = BranchId(999);
+
+        let result = update_pr_target_for_branch(branch_id, &dag, "main");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not found in DAG"));
+    }
+
+    #[test]
+    fn test_update_pr_target_for_branch_no_pr() {
+        let mut dag = Dag::new();
+        let branch_id = dag.create_branch("feature".to_string());
+
+        let result = update_pr_target_for_branch(branch_id, &dag, "main");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not have an associated pull request"));
     }
 }
