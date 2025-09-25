@@ -45,6 +45,58 @@ pub fn is_git_repository() -> bool {
         .unwrap_or(false)
 }
 
+/// Get the git repository root directory
+/// For worktrees, this returns the main repository root, not the worktree root
+/// Returns the absolute path to the git repository root
+/// Returns an error if not in a git repository or if git command fails
+pub fn get_git_repo_root() -> Result<String, String> {
+    // First, get the git directory
+    let git_dir_output = Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .map_err(|e| format!("Failed to execute git command: {}", e))?;
+
+    if !git_dir_output.status.success() {
+        return Err("Failed to get git directory. Are you in a git repository?".to_string());
+    }
+
+    let git_dir = String::from_utf8(git_dir_output.stdout)
+        .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?
+        .trim()
+        .to_string();
+
+    // Check if this is a worktree by looking for "worktrees" in the path
+    if git_dir.contains("worktrees") {
+        // This is a worktree, extract the main repository root
+        // The git dir path will be something like: /path/to/main/repo/.git/worktrees/worktree-name
+        // We need to extract: /path/to/main/repo
+        let git_dir_path = std::path::Path::new(&git_dir);
+        // Go up from .git/worktrees/worktree-name to get to the main repo root
+        if let Some(main_repo_root) = git_dir_path.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            return Ok(main_repo_root.to_string_lossy().to_string());
+        } else {
+            return Err("Failed to determine main repository root from worktree".to_string());
+        }
+    } else {
+        // This is a regular repository, use show-toplevel
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .map_err(|e| format!("Failed to execute git command: {}", e))?;
+
+        if !output.status.success() {
+            return Err("Failed to get git repository root. Are you in a git repository?".to_string());
+        }
+
+        let repo_root = String::from_utf8(output.stdout)
+            .map_err(|e| format!("Invalid UTF-8 in git output: {}", e))?
+            .trim()
+            .to_string();
+
+        Ok(repo_root)
+    }
+}
+
 /// Get all local git branches
 pub fn get_all_branches() -> Result<Vec<String>, String> {
     let output = Command::new("git")
