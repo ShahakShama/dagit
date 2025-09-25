@@ -216,8 +216,13 @@ fn update_branch(
 
                 // Check if parent is an ancestor of this branch
                 println!("    Checking if '{}' is ancestor of '{}'...", parent_name, branch_name);
-                // Temporarily always return true to test the DAG operations
-                let is_ancestor = true; // git::is_ancestor(&parent_name, &branch_name);
+                let is_ancestor = match git::is_ancestor(&parent_name, &branch_name) {
+                    Ok(result) => result,
+                    Err(e) => {
+                        println!("    Error checking ancestry: {} - skipping redundant check", e);
+                        false
+                    }
+                };
                 if is_ancestor {
                     println!("    *** REMOVING BRANCH '{}' ***", branch_name);
                     println!("    Yes! '{}' is ancestor of '{}'", parent_name, branch_name);
