@@ -6,7 +6,7 @@ mod git;
 mod flow_tests;
 
 use clap::{Parser, Subcommand};
-use git::{get_current_git_branch, find_closest_parent, find_closest_children, fetch_from_origin, rebase_against_origin, rebase_branch, RebaseOriginError};
+use git::{get_current_git_branch, find_closest_parent, find_closest_children, fetch_from_origin, rebase_against_origin, rebase_branch, RebaseOriginError, create_pr_for_branch};
 use serde::{read_dag_from_file, write_dag_to_file};
 use std::collections::HashSet;
 
@@ -27,6 +27,8 @@ enum Commands {
     },
     /// Update all tracked branches by rebasing against origin and parents
     Update,
+    /// Submit PRs for all tracked branches
+    Submit,
 }
 
 fn main() {
@@ -38,6 +40,9 @@ fn main() {
         }
         Commands::Update => {
             handle_update_command();
+        }
+        Commands::Submit => {
+            handle_submit_command();
         }
     }
 }
@@ -339,6 +344,86 @@ fn handle_update_command() {
     if failed_count > 0 || skipped_count > 0 {
         println!();
         println!("Some branches had issues. Check the output above for details.");
+    }
+}
+
+fn handle_submit_command() {
+    println!("Starting submit process...");
+
+    // Load existing DAG from file
+    let mut dag = match read_dag_from_file() {
+        Ok(dag) => dag,
+        Err(e) => {
+            eprintln!("Failed to read DAG file: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if dag.is_empty() {
+        println!("No branches are being tracked. Use 'dagit track' to add branches first.");
+        return;
+    }
+
+    // Get branches in topological sort order
+    let sorted_branch_ids = match dag.topological_sort() {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    println!("Processing {} branches in topological order for PR creation...", sorted_branch_ids.len());
+
+    let mut pr_created_count = 0;
+    let mut pr_skipped_count = 0;
+    let mut pr_error_count = 0;
+
+    // Process each branch in topological order
+    for &branch_id in &sorted_branch_ids {
+        // Get branch name for logging
+        let branch_name = dag.get_branch(&branch_id)
+            .map(|b| b.git_name.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+
+        println!("*** Processing branch '{}' ***", branch_name);
+
+        // Create PR for this branch
+        match create_pr_for_branch(branch_id, &mut dag) {
+            Ok(Some(pr_number)) => {
+                println!("  ✓ Created PR #{}", pr_number);
+                pr_created_count += 1;
+            }
+            Ok(None) => {
+                println!("  - Skipped (already exists or no parent)");
+                pr_skipped_count += 1;
+            }
+            Err(e) => {
+                println!("  ✗ Error: {}", e);
+                pr_error_count += 1;
+            }
+        }
+    }
+
+    // Save updated DAG back to file (to persist pr_number updates)
+    match write_dag_to_file(&dag) {
+        Ok(()) => {},
+        Err(e) => {
+            eprintln!("Failed to write DAG file: {}", e);
+            std::process::exit(1);
+        }
+    }
+
+    // Summary
+    println!();
+    println!("Submit completed:");
+    println!("  ✓ {} PRs created", pr_created_count);
+    println!("  - {} PRs skipped (already exist or no parent)", pr_skipped_count);
+    println!("  ✗ {} PR creation errors", pr_error_count);
+
+    if pr_error_count > 0 {
+        println!();
+        println!("Some branches had PR creation errors. Check the output above for details.");
     }
 }
 
