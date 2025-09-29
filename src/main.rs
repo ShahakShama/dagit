@@ -99,6 +99,8 @@ enum Commands {
     Update,
     /// Submit PRs for all tracked branches
     Submit,
+    /// Print the DAG structure
+    Dag,
 }
 
 fn main() {
@@ -113,6 +115,9 @@ fn main() {
         }
         Commands::Submit => {
             handle_submit_command();
+        }
+        Commands::Dag => {
+            handle_dag_command();
         }
     }
 }
@@ -501,6 +506,129 @@ fn handle_submit_command() {
     if pr_error_count > 0 {
         println!();
         println!("Some branches had PR creation errors. Check the output above for details.");
+    }
+}
+
+const DAG_INDENT_ROWS: usize = 3;
+
+fn handle_dag_command() {
+    // Load existing DAG from file
+    let dag = match read_dag_from_file() {
+        Ok(dag) => dag,
+        Err(e) => {
+            eprintln!("Failed to read DAG file: {}", e);
+            std::process::exit(1);
+        }
+    };
+
+    if dag.is_empty() {
+        println!("No branches are being tracked. Use 'dagit track' to add branches first.");
+        return;
+    }
+
+    // Find the current branch
+    let current_branch_name = match get_current_git_branch() {
+        Ok(name) => Some(name),
+        Err(_) => None,
+    };
+
+    // Perform DFS traversal that prints current branch last
+    print_dag(&dag, current_branch_name);
+}
+
+fn print_dag(dag: &dag::Dag, current_branch_name: Option<String>) {
+    // Find root branches (branches with no parents)
+    let mut roots = Vec::new();
+    for (&branch_id, branch) in &dag.branches {
+        if branch.parents.is_empty() {
+            roots.push(branch_id);
+        }
+    }
+
+    // Sort roots to ensure consistent output
+    roots.sort_by_key(|&id| id.0);
+
+    // Track visited branches and current indentation level
+    let mut visited = std::collections::HashSet::new();
+    let mut printed_branches = std::collections::HashSet::new();
+
+    // First pass: print all branches except current branch
+    for &root_id in &roots {
+        dfs_print(dag, root_id, 0, &mut visited, &mut printed_branches, &current_branch_name, false);
+    }
+
+    // Second pass: print current branch if it exists and wasn't printed yet
+    if let Some(ref current_name) = current_branch_name {
+        if let Some(current_branch) = dag.branches.values().find(|b| &b.git_name == current_name) {
+            if !printed_branches.contains(&current_branch.uid) {
+                // Print connection from parent if any
+                if let Some(&parent_id) = current_branch.parents.first() {
+                    if printed_branches.contains(&parent_id) {
+                        // Print vertical connection line
+                        println!("{}", " ".repeat(DAG_INDENT_ROWS) + "|");
+                    }
+                }
+                // Print the current branch
+                match get_branch_info(current_branch, 0, dag) {
+                    Ok(info) => println!("{}", info),
+                    Err(e) => eprintln!("Error getting branch info: {}", e),
+                }
+            }
+        }
+    }
+}
+
+fn dfs_print(
+    dag: &dag::Dag,
+    branch_id: dag::BranchId,
+    indent: usize,
+    visited: &mut std::collections::HashSet<dag::BranchId>,
+    printed_branches: &mut std::collections::HashSet<dag::BranchId>,
+    current_branch_name: &Option<String>,
+    is_current_branch_context: bool,
+) {
+    if visited.contains(&branch_id) {
+        return;
+    }
+    visited.insert(branch_id);
+
+    let branch = match dag.get_branch(&branch_id) {
+        Some(b) => b,
+        None => return,
+    };
+
+    // Skip current branch in first pass
+    let is_current = current_branch_name.as_ref().map_or(false, |name| name == &branch.git_name);
+    if is_current && !is_current_branch_context {
+        return;
+    }
+
+    // Print connection line from parent (except for root)
+    if indent > 0 {
+        println!("{}", " ".repeat(indent * DAG_INDENT_ROWS) + "|");
+    }
+
+    // Print the branch info
+    match get_branch_info(branch, indent * DAG_INDENT_ROWS, dag) {
+        Ok(info) => println!("{}", info),
+        Err(e) => eprintln!("Error getting branch info: {}", e),
+    }
+    printed_branches.insert(branch_id);
+
+    // Get children and sort them for consistent output
+    let mut children: Vec<_> = branch.children.iter().cloned().collect();
+    children.sort_by_key(|&id| id.0);
+
+    // Print children
+    for (i, &child_id) in children.iter().enumerate() {
+        if i == 0 {
+            // First child: continue at same indent level
+            dfs_print(dag, child_id, indent, visited, printed_branches, current_branch_name, is_current_branch_context);
+        } else {
+            // Subsequent children: increase indent and add branch connector
+            println!("{}", " ".repeat(indent * DAG_INDENT_ROWS) + "/");
+            dfs_print(dag, child_id, indent + 1, visited, printed_branches, current_branch_name, is_current_branch_context);
+        }
     }
 }
 
