@@ -526,17 +526,11 @@ fn handle_dag_command() {
         return;
     }
 
-    // Find the current branch
-    let current_branch_name = match get_current_git_branch() {
-        Ok(name) => Some(name),
-        Err(_) => None,
-    };
-
-    // Perform DFS traversal that prints current branch last
-    print_dag(&dag, current_branch_name);
+    // Perform DFS traversal
+    print_dag(&dag);
 }
 
-fn print_dag(dag: &dag::Dag, current_branch_name: Option<String>) {
+fn print_dag(dag: &dag::Dag) {
     // Find root branches (branches with no parents)
     let mut roots = Vec::new();
     for (&branch_id, branch) in &dag.branches {
@@ -548,33 +542,12 @@ fn print_dag(dag: &dag::Dag, current_branch_name: Option<String>) {
     // Sort roots to ensure consistent output
     roots.sort_by_key(|&id| id.0);
 
-    // Track visited branches and current indentation level
+    // Track visited branches
     let mut visited = std::collections::HashSet::new();
-    let mut printed_branches = std::collections::HashSet::new();
 
-    // First pass: print all branches except current branch
+    // DFS traversal from all roots
     for &root_id in &roots {
-        dfs_print(dag, root_id, 0, &mut visited, &mut printed_branches, &current_branch_name, false);
-    }
-
-    // Second pass: print current branch if it exists and wasn't printed yet
-    if let Some(ref current_name) = current_branch_name {
-        if let Some(current_branch) = dag.branches.values().find(|b| &b.git_name == current_name) {
-            if !printed_branches.contains(&current_branch.uid) {
-                // Print connection from parent if any
-                if let Some(&parent_id) = current_branch.parents.first() {
-                    if printed_branches.contains(&parent_id) {
-                        // Print vertical connection line
-                        println!("{}", " ".repeat(DAG_INDENT_ROWS) + "|");
-                    }
-                }
-                // Print the current branch
-                match get_branch_info(current_branch, 0, dag) {
-                    Ok(info) => println!("{}", info),
-                    Err(e) => eprintln!("Error getting branch info: {}", e),
-                }
-            }
-        }
+        dfs_print(dag, root_id, 0, &mut visited);
     }
 }
 
@@ -583,9 +556,6 @@ fn dfs_print(
     branch_id: dag::BranchId,
     indent: usize,
     visited: &mut std::collections::HashSet<dag::BranchId>,
-    printed_branches: &mut std::collections::HashSet<dag::BranchId>,
-    current_branch_name: &Option<String>,
-    is_current_branch_context: bool,
 ) {
     if visited.contains(&branch_id) {
         return;
@@ -597,12 +567,6 @@ fn dfs_print(
         None => return,
     };
 
-    // Skip current branch in first pass
-    let is_current = current_branch_name.as_ref().map_or(false, |name| name == &branch.git_name);
-    if is_current && !is_current_branch_context {
-        return;
-    }
-
     // Print connection line from parent (except for root)
     if indent > 0 {
         println!("{}", " ".repeat(indent * DAG_INDENT_ROWS) + "|");
@@ -613,7 +577,6 @@ fn dfs_print(
         Ok(info) => println!("{}", info),
         Err(e) => eprintln!("Error getting branch info: {}", e),
     }
-    printed_branches.insert(branch_id);
 
     // Get children and sort them for consistent output
     let mut children: Vec<_> = branch.children.iter().cloned().collect();
@@ -623,11 +586,11 @@ fn dfs_print(
     for (i, &child_id) in children.iter().enumerate() {
         if i == 0 {
             // First child: continue at same indent level
-            dfs_print(dag, child_id, indent, visited, printed_branches, current_branch_name, is_current_branch_context);
+            dfs_print(dag, child_id, indent, visited);
         } else {
-            // Subsequent children: increase indent and add branch connector
+            // Subsequent children: print branch connector at parent level, then indent child
             println!("{}", " ".repeat(indent * DAG_INDENT_ROWS) + "/");
-            dfs_print(dag, child_id, indent + 1, visited, printed_branches, current_branch_name, is_current_branch_context);
+            dfs_print(dag, child_id, indent + 1, visited);
         }
     }
 }
