@@ -567,14 +567,16 @@ fn dfs_print(
         None => return,
     };
 
-    // Print connection line from parent (except for root)
-    if indent > 0 {
-        println!("{}", " ".repeat(indent * DAG_INDENT_ROWS) + "|");
-    }
-
     // Print the branch info
-    match get_branch_info(branch, indent * DAG_INDENT_ROWS, dag) {
-        Ok(info) => println!("{}", info),
+    match get_branch_info(branch, 0, dag) {
+        Ok(info) => {
+            let prefix_str = if indent > 0 {
+                format!("{}", ("▼".to_owned()+&(" ".repeat(DAG_INDENT_ROWS))).repeat(indent))
+            } else {
+                "".to_string()
+            };
+            println!("{}{}", prefix_str, info);
+        }
         Err(e) => eprintln!("Error getting branch info: {}", e),
     }
 
@@ -583,15 +585,13 @@ fn dfs_print(
     children.sort_by_key(|&id| id.0);
 
     // Print children
+    if !children.is_empty() {
+        let continuation_line_char = if children.len() < 2 { "│" } else { "├" };
+        println!("{}{}{}", " ".repeat(indent), continuation_line_char, ("─".repeat(DAG_INDENT_ROWS) + "┬").repeat(children.len().saturating_sub(1)));
+        println!("{}│{}", " ".repeat(indent), (" ".repeat(DAG_INDENT_ROWS) + "▼").repeat(children.len().saturating_sub(1)));
+    }
     for (i, &child_id) in children.iter().enumerate() {
-        if i == 0 {
-            // First child: continue at same indent level
-            dfs_print(dag, child_id, indent, visited);
-        } else {
-            // Subsequent children: print branch connector at parent level, then indent child
-            println!("{}", " ".repeat(indent * DAG_INDENT_ROWS) + "/");
-            dfs_print(dag, child_id, indent + 1, visited);
-        }
+        dfs_print(dag, child_id, indent + children.len() - i - 1, visited);
     }
 }
 
